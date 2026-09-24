@@ -4,6 +4,11 @@ Audience: an agent (or developer) working in a CESM/CAM checkout that wants to a
 HARP2 simulator from this repository. Read section 2 first: the right integration path
 depends on which COSP version your CAM uses, and the two paths are not interchangeable.
 
+Revision 3. New: the back-port for CESM2.1/2.2 exists and was verified (branch
+`claude/harp2-cosp-v2.1.4cesm`); Path A (section 5) now uses it, with a tested patch for
+CAM's `Makefile.in` and release line numbers for every CAM edit. This file is identical on
+both HARP2 branches.
+
 Revision 2 (after an independent review from a CESM2.1 installation). Changes from
 revision 1: corrected history-averaging recipe (3.5), corrected MG2 `MU` facts (3.2),
 the ve range of the LUT extended to 0.40 with saturation diagnostics, HARP2 swath input
@@ -15,7 +20,8 @@ in your own checkout before editing, since line numbers drift):
 
 | Code | Branch / tag | Commit |
 |---|---|---|
-| HARP2 COSP branch | `zzbatmos/COSPv2.0_PACE`, branch `claude/great-lovelace-wsm2hk` | base `5eb05e5` (= CFMIP COSP `v2.2.1`) + HARP2 commits |
+| HARP2 COSP branch (v2.2) | `zzbatmos/COSPv2.0_PACE`, branch `claude/great-lovelace-wsm2hk` | base `5eb05e5` (= CFMIP COSP `v2.2.1`) + HARP2 commits |
+| HARP2 back-port (v2.1.4) | `zzbatmos/COSPv2.0_PACE`, branch `claude/harp2-cosp-v2.1.4cesm` | base `34d8eef` (= CFMIP COSP `v2.1.4cesm`) + HARP2 commit |
 | CAM for CESM2.1 | `ESCOMP/CAM` `cam_cesm2_1_rel` (branch head) | `405a3f2` |
 | CAM for CESM2.2 | `ESCOMP/CAM` `cam_cesm2_2_rel` | `c47c4d7` |
 | CAM development | `ESCOMP/CAM` `cam_development` | `e9e28e4` (2026-09-18) |
@@ -69,6 +75,11 @@ reset is at line 2551 there and 2553 here).
   pre-existing output is bit-identical to COSP `v2.2.1`, also with chunking, model levels
   and swathing). The reviewer also ran the unit tests with CAM's double-precision
   `cosp_kinds`. Not yet built or run inside CAM.
+* The **back-port** branch `claude/harp2-cosp-v2.1.4cesm` provides the same simulator for
+  COSP `v2.1.4cesm`: identical physics files, LUT, output pointers and bins; types in
+  `mod_cosp`; `cospgridIN%sza` added as a new optional field; no swaths. Its offline
+  HARP2 outputs are bit-identical to the v2.2 branch, and its COSP library builds with
+  CAM release's own `Makefile.in` (patched), `cosp_kinds.F90` and optics (section 5).
 
 ## 2. Step 1: find out which COSP your CAM uses
 
@@ -112,9 +123,10 @@ Decision:
 * COSP is **v2.2.x** (typically `cam_development`, which still supports `-phys cam6`):
   use **Path B** (section 4). The HARP2 branch drops in.
 * COSP is **v2.1.4cesm** (CESM2.1 or CESM2.2 releases, the CMIP6-era CAM6): use
-  **Path A** (section 5), a back-port. Do **not** replace COSP with the HARP2 branch in a
-  release CAM: the release `cospsimulator_intr.F90` is written for the v2.1.4 API (types
-  in `mod_cosp`, shorter `COSP_INIT`, no swath type) and will not compile against v2.2.1.
+  **Path A** (section 5) with the back-port branch `claude/harp2-cosp-v2.1.4cesm`. Do
+  **not** use the v2.2 branch in a release CAM: the release `cospsimulator_intr.F90` is
+  written for the v2.1.4 API (types in `mod_cosp`, shorter `COSP_INIT`, no swath type) and
+  will not compile against v2.2.1.
 * Any other tag (v2.1.5 to v2.1.9, v2.2.0): use the fingerprints above to pick the
   nearer path.
 
@@ -134,6 +146,11 @@ cospIN%reffLiq = MODIS_waterSize*1.0e6_wp   ! microns
 
 `cospIN%fracLiq` is computed by `modis_optics` only inside `if (lmodis_sim)`. For the
 first integration, **require `cosp_lmodis_sim=.true.` whenever HARP2 is on**.
+
+In the CESM2.1/2.2 release, CAM's own `optics/cosp_optics.F90` includes stratiform snow:
+`cospIN%tau_067` contains the snow optical depth (release lines 3195 to 3206) and
+`modis_optics` returns `fracLiq = tau_liq/(tau_liq + tau_ice + tau_snow)` (line 3257). HARP2
+therefore treats ice and snow alike, as attenuating but non-polarizing. No change needed.
 
 ### 3.2 Effective variance from the microphysics
 
@@ -363,42 +380,115 @@ cosp_harp2_interface.o : $(COSP_PATH)/src/src/simulator/cosp_harp2_interface.F90
 6. History: `add_hist_coord` and `addfld` in `cospsimulator_intr_init`, `outfld` in the
    run routine, with the shared-mask weighting of 3.5.
 7. `sza` is already filled (line 2360); nothing to do.
+8. **Which columns COSP runs on**: COSP is run only on columns where at least one output
+   of an active simulator is in an active history file (`hist_fld_col_active`, lines 1992
+   to 2069; the sunlit flag at line 2295 requires `run_cosp`), unless `cosp_runall` is
+   true. Add a `fname_harp2` list (the HARP2 field names) and a `run_harp2` array, set it
+   from `hist_fld_col_active` when HARP2 is on, and include `any(run_harp2(:,i))` in the
+   `run_cosp` condition. Otherwise a run whose history holds HARP2 fields but no MODIS
+   fields gets `R_UNDEF` everywhere.
 
-## 5. Path A: CESM2.1/2.2 release (COSP v2.1.4cesm), back-port
+## 5. Path A: CESM2.1/2.2 release (COSP v2.1.4cesm): use the back-port branch
 
-The HARP2 physics is portable; the plumbing must follow the v2.1.4 layout. Work in an
-isolated copy (not in a checkout used by queued experiments), on a local branch of the
-`v2.1.4cesm` checkout in `$CAM/src/physics/cosp2/src`. Use the HARP2 branch as the
-template: `git diff 5eb05e5 <HARP2 branch> -- src`.
+The back-port is done: branch `claude/harp2-cosp-v2.1.4cesm` of `zzbatmos/COSPv2.0_PACE`,
+based on `v2.1.4cesm` (`34d8eef`). What it changes, and how it was verified, is listed in
+its `src/simulator/HARP2_simulator/README.md` ("Differences from the COSP v2.2 version").
+Line numbers below are for `cam_cesm2_1_rel` `405a3f2`; `cospsimulator_intr.F90` and
+`src/physics/cosp2/Makefile.in` are byte-identical in `cam_cesm2_2_rel` `c47c4d7`. Work in
+a separate sandbox (or at least a separate case and build), not in one used by queued
+experiments.
 
-1. **Copy unchanged:** `harp2_simulator.F90`, the LUT, `harp2_lut_generator.py`. The
-   core only needs `hist2D` (`mod_cosp_stats`, which in v2.1.4 depends only on
-   `cosp_kinds` and `mod_cosp_config`), `R_UNDEF`, `pi`, `wp`; all exist in v2.1.4cesm.
-2. **`cosp_config.F90`:** copy the "HARP2 simulator ReffLIQ/VeffLIQ joint-histogram"
-   block, which defines `numHARP2ReffBins`, `numHARP2VeffBins`, `numHARP2Flags` and the
-   bins explicitly (it no longer inherits the MODIS bins, which are 6 in v2.1.4). It uses
-   the implied-do variables `k`, `l`, which v2.1.4 `cosp_config.F90` declares.
-3. **`cosp_harp2_interface.F90`:** remove `use mod_cosp_stats, only: compute_orbitmasks,
-   cosp_optical_inputs, cosp_column_inputs` (in v2.1.4 the types live in `mod_cosp`, which
-   uses the interface modules, so importing them here would be circular). Keep the
-   parameters, `COSP_HARP2_INIT`, `harp2_lut_loaded`, `READ_HARP2_LUT`, `uniform_grid`,
-   `HARP2_VIEW_GEOMETRY` and the `harp2_IN` type. Delete `COSP_ASSIGN_harp2IN` and its
-   `_CLEAN` routine; do that assignment inline in `cosp.F90`, as v2.1.4 does for MODIS
-   (v2.1.4cesm `cosp.F90` around line 680: pointer assignments plus `pack` of sunlit
-   indices), **without any swath logic** (no `harp2_swathIN`, no `compute_orbitmasks`).
-4. **`cosp.F90` (v2.1.4):** add `reffLiq`, `veffLiq` to `cosp_optical_inputs`; add
-   `real(wp),allocatable,dimension(:) :: sza` to `cosp_column_inputs`; add the output
-   pointers to `cosp_outputs`; add `Lharp2_subcolumn/column` switches, the error checks,
-   the subcolumn loop, the column statistics, the night fill and the cleanup (copy from
-   the HARP2 branch `cosp.F90`, adapting names); add optional trailing arguments
-   `Lharp2, harp2_lut_file` to `COSP_INIT` (v2.1.4's `COSP_INIT` has no optional
-   arguments yet; appending optional ones keeps CAM's positional call valid).
-5. **CAM release `cospsimulator_intr.F90`:** as in 4.4, plus allocate and fill
-   `cospstateIN%sza = acos(coszrs(1:ncol))*180._r8/pi` in `construct_cospstateIN` / after
-   the `sunlit` block (around lines 2035 to 2077). Use all CAM levels, top to bottom
-   (`1:pver` layers, `pver+1` interfaces). No swath changes.
-6. **Build:** same `Makefile.in` additions as 4.3 (the release file uses the same rule
-   style).
+### 5.1 Get the code into CAM's COSP checkout
+
+Either check the branch out by hand (quick; a later `checkout_externals` would restore
+`v2.1.4cesm`):
+
+```bash
+cd $CAM/src/physics/cosp2/src
+git fetch https://github.com/zzbatmos/COSPv2.0_PACE claude/harp2-cosp-v2.1.4cesm
+git checkout FETCH_HEAD
+git diff --stat 34d8eef HEAD -- src      # the HARP2 changes under src/
+```
+
+or make it durable in `$CAM/Externals_CAM.cfg`, section `[cosp2]`: set
+`repo_url = https://github.com/zzbatmos/COSPv2.0_PACE` and replace `tag = v2.1.4cesm` by
+`hash = <commit>` (from `git ls-remote https://github.com/zzbatmos/COSPv2.0_PACE
+claude/harp2-cosp-v2.1.4cesm`; `branch = claude/harp2-cosp-v2.1.4cesm` also works but is
+not reproducible). Keep `sparse = ../.cosp_sparse_checkout`. Then, from `$CAM`:
+`./manage_externals/checkout_externals -e Externals_CAM.cfg` and check with `-S`.
+If the repository is private, the machine needs GitHub credentials for either way.
+
+The sparse checkout keeps only `src/`, which holds everything CAM needs, including the
+LUT, this guide and the `Makefile.in` patch.
+
+### 5.2 Build: patch `src/physics/cosp2/Makefile.in` (required even with HARP2 off)
+
+The back-port's `cosp.F90` uses the HARP2 modules, so CAM's COSP library must compile the
+two HARP2 files whether or not HARP2 is switched on (otherwise the build stops with
+`Cannot open module file 'mod_cosp_harp2_interface.mod'`). Apply the tested patch from
+the CAM root:
+
+```bash
+cd $CAM
+patch -p1 < src/physics/cosp2/src/src/simulator/HARP2_simulator/cam_release_Makefile.in.patch
+```
+
+It adds `cosp_harp2_interface.o harp2_simulator.o` to `OBJS` and to the dependencies of
+`cosp.o`, the two dependency lines, and the two compile rules (paths
+`$(COSP_PATH)/src/src/simulator/...`, same style as the MODIS interface rule). CAM's
+`configure` regenerates the COSP `Makefile` from this template, so rebuild the case from
+clean (`./case.build --clean-all`, then `./case.build`). Checked offline: with the patch,
+`libcosp.a` builds from CAM's template, CAM's `cosp_kinds.F90` (`wp = dp`),
+`cosp_errorHandling.F90` (it provides the `errorMessage` that HARP2 uses) and optics,
+with gfortran debug flags and also with `-fdefault-real-8`; without it the build fails
+as described.
+
+### 5.3 Edits in `src/physics/cam/cospsimulator_intr.F90` (release)
+
+1. **Namelist** (`cospsimulator_nl`, line 443; broadcasts from line 470; switch logic
+   around line 502): add `cosp_lharp2_sim`, `cosp_harp2_lut_file`,
+   `cosp_harp2_veff_default`, `cosp_harp2_veff_conv`, broadcast them, add them to
+   `bld/namelist_files/namelist_definition.xml`, and `endrun` if `cosp_lharp2_sim` is
+   true while `cosp_lmodis_sim` is false (3.1). Broadcast **before** the
+   `call setcosp2values(...)` at line 577, because that routine calls `COSP_INIT`.
+2. **`COSP_INIT`** (line 324, in `setcosp2values`): append
+   `Lharp2=cosp_lharp2_sim, harp2_lut_file=trim(cosp_harp2_lut_file)` to the positional
+   call, then
+   `if (cosp_lharp2_sim .and. .not. harp2_lut_loaded()) call endrun('HARP2 LUT not loaded')`
+   with `use mod_cosp_harp2_interface, only: harp2_lut_loaded`.
+3. **Solar zenith angle** (new field): in `construct_cospstateIN` (line 3311) add
+   `y%sza(npoints)` to the allocation; in `destroy_cospstateIN` deallocate it; in the run
+   routine after `cospstateIN%sunlit = cam_sunlit(1:ncol)` (line 2077) set
+   `cospstateIN%sza = acos(max(-1._r8, min(1._r8, coszrs(1:ncol))))*180._r8/pi`
+   (`coszrs` is an argument of `cospsimulator_intr_run`, line 1214; `pi` is already
+   imported from `physconst` at line 1197). Night points get SZA > 90 and are masked.
+4. **Inputs**: `construct_cospIN` (line 3270) already allocates `tau_067` and `fracLiq`
+   unconditionally; add `y%reffLiq` and `y%veffLiq` `(npoints,ncolumns,nlevels)` (when
+   HARP2 is on) and deallocate them in `destroy_cospIN` (line 3441).
+5. **Optics** (`subsample_and_optics`, line 2787; MODIS block lines 3213 to 3262): after
+   `call modis_optics(...)` fill `cospIN%reffLiq = MODIS_waterSize*1.0e6_wp` and
+   `cospIN%veffLiq` (3.2). `subsample_and_optics` has no pbuf access: in
+   `cospsimulator_intr_init` get `pbuf_get_index('MU')` (and `'AST'` if used) next to the
+   other indices (lines 1157 onward), in the run routine get the fields with
+   `pbuf_get_field`, compute `ve_ls` and `ve_conv` on `(1:ncol,1:pver)`, and pass them as
+   two new arguments (like `dtau_s`). The 0.67 micron block (line 3195) already runs when
+   MODIS is on.
+6. **Outputs**: `construct_cosp_outputs` (line 3334): allocate the `harp2_*` pointers you
+   write (sizes `numHARP2ReffBins`, `numHARP2VeffBins`, `numHARP2Flags` from
+   `mod_cosp_config`); deallocate them in `destroy_cosp_outputs`.
+7. **History**: register next to the MODIS fields (`addfld`, from line 986;
+   `add_default`, line 1049) and the new coordinates (3.5); write after the MODIS
+   `outfld` calls (around line 2726) with the shared-mask weighting of 3.5. The HARP2
+   outputs are already `R_UNDEF` at night, so they need no entry in the `sunlit_passive`
+   block (lines 2172 to 2255).
+8. **Which columns COSP runs on** (lines 1695 to 1737; the sunlit flag at line 2043
+   requires `run_cosp`): as in 4.4 item 8, add `fname_harp2` (next to `fname_modis`, line
+   1384), `run_harp2`, the `hist_fld_col_active` loop and `any(run_harp2(:,i))` in the
+   `run_cosp` condition.
+9. Levels and ordering need no change: the release passes all levels `1:pver`, top to
+   bottom, and `cospstateIN%phalf` (`pver+1` interfaces, top value set to 0, line 2081),
+   which is what HARP2 expects. CAM calls COSP once per chunk (`start_idx=1,
+   stop_idx=ncol`, line 2115).
 
 ## 6. Validation checklist inside CAM
 
@@ -432,3 +522,6 @@ Use a separate case and executable (do not share one with other queued experimen
 
 1. Swath compatibility: done (separate `harp2_swathIN`, section 4.2).
 2. ve range of the table: extended to 0.40 with diagnostics (section 3.2).
+3. Back-port for CESM2.1/2.2 (COSP `v2.1.4cesm`): done, branch
+   `claude/harp2-cosp-v2.1.4cesm` (section 5). The CAM-side edits of 5.3 are still to be
+   made in the CAM checkout.
