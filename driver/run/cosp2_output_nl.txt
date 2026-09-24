@@ -145,5 +145,14 @@
   Lptradarflag7=.true.,
   Lptradarflag8=.true.,
   Lptradarflag9=.true.,
-  Lradarpia=.true.
+  Lradarpia=.true.,
+  !- HARP2 (PACE) polarimetric cloudbow retrievals. Off by default because the known
+  !  good outputs (KGOs) used for regression testing do not contain these fields yet.
+  Lclwharp2=.false.,
+  Lreffclwharp2=.false.,
+  Lveffclwharp2=.false.,
+  Lclharp2reffveff=.false.,
+  Lharp2flagfrac=.false.,
+  Lharp2vefflimfrac=.false.,
+  Lharp2clampfrac=.false.
 /

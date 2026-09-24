@@ -1,0 +1,48 @@
+# HARP2 simulator: build rules for CAM's COSP library (CESM2.1 cam_cesm2_1_rel and
+# CESM2.2 cam_cesm2_2_rel, COSP v2.1.4cesm + HARP2 back-port). Required whenever the
+# back-port is used, even with HARP2 switched off. Apply from the CAM root
+# (components/cam in a CESM sandbox):  patch -p1 < <this file>
+--- a/src/physics/cosp2/Makefile.in
++++ b/src/physics/cosp2/Makefile.in
+@@ -39,7 +39,8 @@
+         cosp_rttov_interfaceSTUB.o cosp_rttovSTUB.o cosp_parasol_interface.o   \
+         scops.o prec_scops.o cosp_utils.o cosp_optics.o quickbeam_optics.o     \
+         mo_rng.o cosp_errorHandling.o array_lib.o math_lib.o optics_lib.o      \
+-        mrgrnk.o cosp_grLidar532_interface.o cosp_atlid_interface.o
++        mrgrnk.o cosp_grLidar532_interface.o cosp_atlid_interface.o            \
++        cosp_harp2_interface.o harp2_simulator.o
+ 
+ 
+ libcosp.a: $(OBJS)
+@@ -57,7 +58,8 @@
+                              cosp_cloudsat_interface.o cosp_stats.o cosp_parasol_interface.o \
+                              cosp_rttovSTUB.o cosp_rttov_interfaceSTUB.o quickbeam.o         \
+                              MISR_simulator.o lidar_simulator.o parasol.o icarus.o           \
+-                             cosp_grLidar532_interface.o cosp_atlid_interface.o
++                             cosp_grLidar532_interface.o cosp_atlid_interface.o              \
++                             cosp_harp2_interface.o harp2_simulator.o
+ cosp_config.o              : cosp_kinds.o
+ cosp_stats.o               : cosp_kinds.o cosp_config.o
+ cosp_calipso_interface.o   : cosp_kinds.o lidar_simulator.o
+@@ -72,6 +74,8 @@
+ cosp_rttovSTUB.o           : cosp_kinds.o cosp_config.o cosp_constants.o
+ MISR_simulator.o           : cosp_kinds.o cosp_config.o cosp_stats.o
+ modis_simulator.o          : cosp_kinds.o cosp_config.o cosp_stats.o
++harp2_simulator.o          : cosp_kinds.o cosp_config.o cosp_constants.o cosp_stats.o
++cosp_harp2_interface.o     : cosp_kinds.o cosp_constants.o cosp_errorHandling.o harp2_simulator.o
+ lidar_simulator.o          : cosp_kinds.o cosp_config.o cosp_stats.o
+ icarus.o	               : cosp_kinds.o cosp_constants.o  cosp_stats.o
+ parasol.o                  : cosp_kinds.o cosp_config.o cosp_constants.o
+@@ -137,6 +141,12 @@
+ cosp_parasol_interface.o : $(COSP_PATH)/src/src/simulator/cosp_parasol_interface.F90
+ 	$(F90) $(F90FLAGS) -c $<
+ 
++cosp_harp2_interface.o : $(COSP_PATH)/src/src/simulator/cosp_harp2_interface.F90
++	$(F90) $(F90FLAGS) -c $<
++
++harp2_simulator.o : $(COSP_PATH)/src/src/simulator/HARP2_simulator/harp2_simulator.F90
++	$(F90) $(F90FLAGS) -c $<
++
+ cosp_rttovSTUB.o : $(RT_PATH)/cosp_rttovSTUB.F90
+ 	$(F90) $(F90FLAGS) -c $<
+ 

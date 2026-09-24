@@ -9,7 +9,8 @@ ISCCP_PATH   = $(SIM_PATH)/icarus
 MISR_PATH    = $(SIM_PATH)/MISR_simulator
 MODIS_PATH   = $(SIM_PATH)/MODIS_simulator
 PARASOL_PATH = $(SIM_PATH)/parasol
-VPATH = $(SRC_PATH):$(HOOKS):$(SIM_PATH):$(RT_PATH):$(RS_PATH):$(CS_PATH):$(ISCCP_PATH):$(MISR_PATH):$(MODIS_PATH):$(PARASOL_PATH)
+HARP2_PATH   = $(SIM_PATH)/HARP2_simulator
+VPATH = $(SRC_PATH):$(HOOKS):$(SIM_PATH):$(RT_PATH):$(RS_PATH):$(CS_PATH):$(ISCCP_PATH):$(MISR_PATH):$(MODIS_PATH):$(PARASOL_PATH):$(HARP2_PATH)
 
 # Example subcolumn generaton and mapping to optical properties, following COSP 1.4
 SUBCOLS = ../subsample_and_optics_example
@@ -47,7 +48,8 @@ COSP_OBJS = cosp.o cosp_config.o cosp_stats.o cosp_constants.o cosp_errorHandlin
             cosp_isccp_interface.o icarus.o cosp_misr_interface.o MISR_simulator.o               \
             cosp_modis_interface.o  modis_simulator.o cosp_parasol_interface.o  parasol.o        \
             cosp_calipso_interface.o  lidar_simulator.o cosp_cloudsat_interface.o quickbeam.o    \
-            cosp_rttov_interfaceSTUB.o cosp_rttovSTUB.o cosp_grLidar532_interface.o cosp_atlid_interface.o
+            cosp_rttov_interfaceSTUB.o cosp_rttovSTUB.o cosp_grLidar532_interface.o cosp_atlid_interface.o \
+            cosp_harp2_interface.o harp2_simulator.o
 
 LIBRARY = libcosp.a
 
@@ -74,7 +76,8 @@ cosp.o : cosp_kinds.o cosp_modis_interface.o cosp_constants.o  cosp_rttov_interf
 	cosp_misr_interface.o cosp_isccp_interface.o cosp_calipso_interface.o             \
 	cosp_cloudsat_interface.o  cosp_stats.o cosp_parasol_interface.o cosp_rttovSTUB.o \
         cosp_rttov_interfaceSTUB.o quickbeam.o MISR_simulator.o lidar_simulator.o         \
-        parasol.o icarus.o cosp_grLidar532_interface.o cosp_atlid_interface.o
+        parasol.o icarus.o cosp_grLidar532_interface.o cosp_atlid_interface.o             \
+        cosp_harp2_interface.o harp2_simulator.o
 cosp_constants.o            : cosp_kinds.o
 cosp_config.o               : cosp_kinds.o
 cosp_errorHandling.o        : cosp_kinds.o
@@ -84,6 +87,8 @@ icarus.o	            : cosp_kinds.o cosp_constants.o  cosp_stats.o
 cosp_misr_interface.o       : cosp_kinds.o
 MISR_simulator.o            : cosp_kinds.o cosp_config.o cosp_stats.o
 cosp_modis_interface.o      : cosp_kinds.o cosp_config.o modis_simulator.o
+cosp_harp2_interface.o      : cosp_kinds.o cosp_constants.o cosp_errorHandling.o harp2_simulator.o
+harp2_simulator.o           : cosp_kinds.o cosp_config.o cosp_constants.o cosp_stats.o
 modis_simulator.o           : cosp_kinds.o cosp_config.o cosp_stats.o
 cosp_parasol_interface.o    : cosp_kinds.o
 parasol.o                   : cosp_kinds.o cosp_config.o cosp_constants.o

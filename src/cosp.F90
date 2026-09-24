@@ -30,6 +30,7 @@
 ! May 2015- D. Swales - Original version
 ! Mar 2018- R. Guzman - Added OPAQ diagnostics and GLID simulator
 ! Apr 2018- R. Guzman - Added ATLID simulator
+! Sep 2026- HARP2 (PACE) polarimetric cloudbow simulator, back-ported from COSP v2.2
 !
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -46,8 +47,12 @@ MODULE MOD_COSP
                                          ntau,modis_histTau,tau_binBounds,               &
                                          modis_histTauEdges,tau_binEdges,nCloudsatPrecipClass,&
                                          modis_histTauCenters,tau_binCenters,            &
-                                         cloudsat_preclvl,grLidar532_histBsct,atlid_histBsct
+                                         cloudsat_preclvl,grLidar532_histBsct,atlid_histBsct,&
+                                         numHARP2ReffBins,numHARP2VeffBins,numHARP2Flags
   USE MOD_COSP_MODIS_INTERFACE,      ONLY: cosp_modis_init,       modis_IN
+  USE MOD_COSP_HARP2_INTERFACE,      ONLY: cosp_harp2_init,       harp2_IN,                  &
+                                           COSP_ASSIGN_harp2IN_clean, harp2_view_geometry,   &
+                                           HARP2_NVIEW, harp2_default_sza, harp2_max_sza
   USE MOD_COSP_RTTOV_INTERFACE,      ONLY: cosp_rttov_init,       rttov_IN
   USE MOD_COSP_MISR_INTERFACE,       ONLY: cosp_misr_init,        misr_IN
   USE MOD_COSP_ISCCP_INTERFACE,      ONLY: cosp_isccp_init,       isccp_IN
@@ -61,6 +66,7 @@ MODULE MOD_COSP
   USE MOD_MISR_SIMULATOR,            ONLY: misr_subcolumn,        misr_column
   USE MOD_LIDAR_SIMULATOR,           ONLY: lidar_subcolumn,       lidar_column
   USE MOD_MODIS_SIM,                 ONLY: modis_subcolumn,       modis_column
+  USE MOD_HARP2_SIM,                 ONLY: harp2_subcolumn,       harp2_column, nLUT_re
   USE MOD_PARASOL,                   ONLY: parasol_subcolumn,     parasol_column
   use mod_cosp_rttov,                ONLY: rttov_column
   USE MOD_COSP_STATS,                ONLY: COSP_LIDAR_ONLY_CLOUD,COSP_CHANGE_VERTICAL_GRID
@@ -92,7 +98,8 @@ MODULE MOD_COSP
      real(wp),allocatable,dimension(:) :: &
           land,                & ! Land/Sea mask                          (0-1)
           skt,                 & ! Surface temperature                    (K)
-          surfelev               ! Surface Elevation                      (m)
+          surfelev,            & ! Surface Elevation                      (m)
+          sza                    ! Solar zenith angle (HARP2; optional)   (deg)
      ! Fields used ONLY by RTTOV
      integer :: &
           month                  ! Month for surface emissivty atlas      (1-12)
@@ -137,6 +144,8 @@ MODULE MOD_COSP
           fracLiq,             & ! Fraction of optical-depth due to liquid (MODIS)
           asym,                & ! Assymetry parameter @ 3.7micron (MODIS)
           ss_alb,              & ! Single-scattering albedo @ 3.7micron (MODIS)
+          reffLiq,             & ! Liquid effective radius (microns) (HARP2)
+          veffLiq,             & ! Liquid effective variance (HARP2)
           betatot_calipso,     & ! Lidar backscatter coefficient (calipso @ 532nm)
           betatot_grLidar532,  & ! Lidar backscatter coefficient (ground-lidar @ 532nm)
           betatot_atlid,       & ! Lidar backscatter coefficient (atlid @ 355nm)
@@ -284,6 +293,18 @@ MODULE MOD_COSP
           modis_Optical_Thickness_vs_ReffICE => null(),            & ! Tau/ReffICE joint histogram
           modis_Optical_Thickness_vs_ReffLIQ => null()               ! Tau/ReffLIQ joint histogram
 
+     ! HARP2 outputs
+     real(wp),pointer,dimension(:) :: &
+          harp2_Cloud_Fraction_Liquid_Mean => null(),      & ! Fraction of scenes with cloudbow retrieval
+          harp2_Cloud_Particle_Size_Liquid_Mean => null(), & ! Polarimetric liquid effective radius
+          harp2_Effective_Variance_Liquid_Mean => null(),  & ! Polarimetric liquid effective variance
+          harp2_Veff_Limit_Fraction => null(),             & ! Retrievals with ve at a table limit
+          harp2_Input_Clamped_Fraction => null()             ! Subcolumns with clamped inputs
+     real(wp),pointer,dimension(:,:) :: &
+          harp2_Retrieval_Flag_Fraction => null()            ! Fraction of subcolumns per outcome
+     real(wp),pointer,dimension(:,:,:) :: &
+          harp2_Reff_vs_Veff_Liquid => null()                ! ReffLIQ/VeffLIQ joint histogram
+
      ! RTTOV outputs
      real(wp),pointer :: &
           rttov_tbs(:,:) => null() ! Brightness Temperature
@@ -307,6 +328,7 @@ CONTAINS
     type(parasol_IN)  :: parasolIN  ! Input to the PARASOL simulator
     type(cloudsat_IN) :: cloudsatIN ! Input to the CLOUDSAT radar simulator
     type(modis_IN)    :: modisIN    ! Input to the MODIS simulator
+    type(harp2_IN)    :: harp2IN    ! Input to the HARP2 simulator
     type(rttov_IN)    :: rttovIN    ! Input to the RTTOV simulator
     integer,optional  :: start_idx,stop_idx
     logical,optional  :: debug
@@ -329,6 +351,7 @@ CONTAINS
          Lparasol_subcolumn,   & ! On/Off switch for subcolumn PARASOL simulator
          Lcloudsat_subcolumn,  & ! On/Off switch for subcolumn CLOUDSAT simulator
          Lmodis_subcolumn,     & ! On/Off switch for subcolumn MODIS simulator
+         Lharp2_subcolumn,     & ! On/Off switch for subcolumn HARP2 simulator
          Lrttov_subcolumn,     & ! On/Off switch for subcolumn RTTOV simulator
          Lisccp_column,        & ! On/Off switch for column ISCCP simulator
          Lmisr_column,         & ! On/Off switch for column MISR simulator
@@ -338,6 +361,7 @@ CONTAINS
          Lparasol_column,      & ! On/Off switch for column PARASOL simulator
          Lcloudsat_column,     & ! On/Off switch for column CLOUDSAT simulator
          Lmodis_column,        & ! On/Off switch for column MODIS simulator
+         Lharp2_column,        & ! On/Off switch for column HARP2 simulator
          Lrttov_column,        & ! On/Off switch for column RTTOV simulator (not used)
          Lradar_lidar_tcc,     & ! On/Off switch from joint Calipso/Cloudsat product
          Lcloudsat_tcc,       & !
@@ -367,6 +391,24 @@ CONTAINS
          modisJointHistogram,modisJointHistogramIce,modisJointHistogramLiq,     &
          calipso_beta_tot,calipso_betaperp_tot, cloudsatDBZe,parasolPix_refl,   &
          grLidar532_beta_tot,atlid_beta_tot,cloudsatZe_non
+    ! HARP2 variables
+    integer,dimension(:,:),allocatable :: &
+         harp2RetrievedFlag
+    logical,dimension(:,:),allocatable :: &
+         harp2InputClamped,harp2VeffAtLimit
+    real(wp),dimension(:,:),allocatable :: &
+         harp2RetrievedSize,harp2RetrievedVariance,harp2FlagFraction
+    real(wp),dimension(:,:,:),allocatable :: &
+         harp2JointHistogram
+    real(wp),dimension(:),allocatable :: &
+         harp2CfLiquid,harp2MeanSizeLiquid,harp2MeanVarianceLiquid,                   &
+         harp2VeffLimitFraction,harp2InputClampedFraction
+    logical,dimension(:),allocatable :: &
+         harp2Observed
+    real(wp) :: &
+         harp2Mu0
+    real(wp),dimension(HARP2_NVIEW) :: &
+         harp2MuView,harp2ScatAngle
     real(wp),dimension(:),allocatable,target :: &
          out1D_1,out1D_2,out1D_3,out1D_4,out1D_5,out1D_6,out1D_7,out1D_8,       &
          out1D_9,out1D_10,out1D_11,out1D_12 
@@ -412,6 +454,8 @@ CONTAINS
     Lparasol_column     = .false.
     Lcloudsat_column    = .false.
     Lmodis_column       = .false.
+    Lharp2_subcolumn    = .false.
+    Lharp2_column       = .false.
     Lrttov_column       = .false.
     Lradar_lidar_tcc    = .false.
     Llidar_only_freq_cloud = .false.
@@ -567,6 +611,18 @@ CONTAINS
        Lmodis_subcolumn = .true.
     endif
 
+    ! HARP2 (only grid-box statistics are output, so both stages are needed)
+    if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean)               .or.          &
+        associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean)          .or.          &
+        associated(cospOUT%harp2_Effective_Variance_Liquid_Mean)           .or.          &
+        associated(cospOUT%harp2_Reff_vs_Veff_Liquid)                      .or.          &
+        associated(cospOUT%harp2_Retrieval_Flag_Fraction)                  .or.          &
+        associated(cospOUT%harp2_Veff_Limit_Fraction)                      .or.          &
+        associated(cospOUT%harp2_Input_Clamped_Fraction)) then
+       Lharp2_column    = .true.
+       Lharp2_subcolumn = .true.
+    endif
+
     ! Joint simulator products
     if (associated(cospOUT%lidar_only_freq_cloud) .or. associated(cospOUT%radar_lidar_tcc) .or. &
         associated(cospOUT%cloudsat_tcc) .or. associated(cospOUT%cloudsat_tcc2)) then
@@ -590,8 +646,8 @@ CONTAINS
          Lcloudsat_subcolumn, Lcloudsat_column, Lcalipso_subcolumn, Lcalipso_column,     &
          Latlid_subcolumn, Latlid_column, LgrLidar532_subcolumn, LgrLidar532_column,     &
          Lrttov_subcolumn, Lrttov_column, Lparasol_subcolumn, Lparasol_column,           &
-         Lradar_lidar_tcc, Llidar_only_freq_cloud, Lcloudsat_tcc,Lcloudsat_tcc2, cospOUT,&
-         cosp_simulator, nError)
+         Lradar_lidar_tcc, Llidar_only_freq_cloud, Lcloudsat_tcc,Lcloudsat_tcc2,         &
+         Lharp2_subcolumn, Lharp2_column, cospOUT, cosp_simulator, nError)
 
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     ! 3) Populate instrument simulator inputs
@@ -694,6 +750,32 @@ CONTAINS
           allocate(modisIN%notSunlit(count(cospgridIN%sunlit <= 0)))
           modisIN%notSunlit = pack((/ (i, i = 1, Npoints ) /),mask = .not. cospgridIN%sunlit > 0)
        endif
+    endif
+
+    if (Lharp2_subcolumn) then
+       harp2IN%Ncolumns => cospIN%Ncolumns
+       harp2IN%Nlevels  => cospIN%Nlevels
+       harp2IN%Npoints  => Npoints
+       harp2IN%tau      => cospIN%tau_067
+       harp2IN%liqFrac  => cospIN%fracLiq
+       harp2IN%reffLiq  => cospIN%reffLiq
+       harp2IN%veffLiq  => cospIN%veffLiq
+       harp2IN%pres     => cospgridIN%phalf
+       allocate(harp2IN%sza(Npoints), harp2Observed(Npoints))
+       if (allocated(cospgridIN%sza)) then
+          harp2IN%sza(1:Npoints) = cospgridIN%sza(1:Npoints)
+       else
+          harp2IN%sza(1:Npoints) = harp2_default_sza
+       endif
+       ! Observed: daylight and solar zenith angle not too large (no orbit swathing in this
+       ! COSP version)
+       harp2Observed(1:Npoints) = (cospgridIN%sunlit(1:Npoints) > 0) .and.                &
+                                  (harp2IN%sza(1:Npoints) <= harp2_max_sza)
+       harp2IN%Nsunlit = count(harp2Observed)
+       allocate(harp2IN%sunlit(harp2IN%Nsunlit), harp2IN%notSunlit(Npoints-harp2IN%Nsunlit))
+       harp2IN%sunlit    = pack((/ (i, i = 1, Npoints) /), mask = harp2Observed)
+       harp2IN%notSunlit = pack((/ (i, i = 1, Npoints) /), mask = .not. harp2Observed)
+       deallocate(harp2Observed)
     endif
 
     if (Lrttov_column) then
@@ -884,6 +966,32 @@ CONTAINS
                                   modisRetrievedPhase(i,:),                              &
                                   modisRetrievedCloudTopPressure(i,:),                   &
                                   modisRetrievedTau(i,:),modisRetrievedSize(i,:))
+          end do
+       endif
+    endif
+
+    ! HARP2 subcolumn simulator
+    if (Lharp2_subcolumn) then
+       if (harp2IN%nSunlit > 0) then
+          allocate(harp2RetrievedFlag(harp2IN%nSunlit,harp2IN%nColumns),                 &
+                   harp2RetrievedSize(harp2IN%nSunlit,harp2IN%nColumns),                 &
+                   harp2RetrievedVariance(harp2IN%nSunlit,harp2IN%nColumns),             &
+                   harp2InputClamped(harp2IN%nSunlit,harp2IN%nColumns),                  &
+                   harp2VeffAtLimit(harp2IN%nSunlit,harp2IN%nColumns))
+          ! Call simulator one column at a time on observed columns
+          do i = 1, harp2IN%nSunlit
+             call harp2_view_geometry(harp2IN%sza(harp2IN%sunlit(i)), harp2Mu0,           &
+                                      harp2MuView, harp2ScatAngle)
+             call harp2_subcolumn(harp2IN%Ncolumns, harp2IN%Nlevels, HARP2_NVIEW,         &
+                                  harp2Mu0, harp2MuView, harp2ScatAngle,                  &
+                                  harp2IN%pres(harp2IN%sunlit(i),:),                      &
+                                  harp2IN%tau(harp2IN%sunlit(i),:,:),                     &
+                                  harp2IN%liqFrac(harp2IN%sunlit(i),:,:),                 &
+                                  harp2IN%reffLiq(harp2IN%sunlit(i),:,:),                 &
+                                  harp2IN%veffLiq(harp2IN%sunlit(i),:,:),                 &
+                                  harp2RetrievedFlag(i,:), harp2RetrievedSize(i,:),       &
+                                  harp2RetrievedVariance(i,:), harp2InputClamped(i,:),    &
+                                  harp2VeffAtLimit(i,:))
           end do
        endif
     endif
@@ -1486,6 +1594,68 @@ CONTAINS
        if (allocated(isccpLEVMATCH))                   deallocate(isccpLEVMATCH)
     endif
 
+    ! HARP2
+    if (Lharp2_column) then
+       if (harp2IN%nSunlit > 0) then
+          allocate(harp2CfLiquid(harp2IN%nSunlit), harp2MeanSizeLiquid(harp2IN%nSunlit),   &
+                   harp2MeanVarianceLiquid(harp2IN%nSunlit),                             &
+                   harp2JointHistogram(harp2IN%nSunlit,numHARP2ReffBins,numHARP2VeffBins),&
+                   harp2FlagFraction(harp2IN%nSunlit,numHARP2Flags),                     &
+                   harp2VeffLimitFraction(harp2IN%nSunlit),                              &
+                   harp2InputClampedFraction(harp2IN%nSunlit))
+          call harp2_column(harp2IN%nSunlit, harp2IN%Ncolumns, harp2RetrievedFlag,        &
+                            harp2RetrievedSize, harp2RetrievedVariance,                   &
+                            harp2InputClamped, harp2VeffAtLimit, harp2CfLiquid,           &
+                            harp2MeanSizeLiquid, harp2MeanVarianceLiquid,                 &
+                            harp2JointHistogram, harp2FlagFraction,                       &
+                            harp2VeffLimitFraction, harp2InputClampedFraction)
+          if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean))                                          &
+             cospOUT%harp2_Cloud_Fraction_Liquid_Mean(ij+harp2IN%sunlit(:)-1) = harp2CfLiquid
+          if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean))                                          &
+             cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean(ij+harp2IN%sunlit(:)-1) = harp2MeanSizeLiquid
+          if (associated(cospOUT%harp2_Effective_Variance_Liquid_Mean))                                          &
+             cospOUT%harp2_Effective_Variance_Liquid_Mean(ij+harp2IN%sunlit(:)-1) = harp2MeanVarianceLiquid
+          if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                                          &
+             cospOUT%harp2_Reff_vs_Veff_Liquid(ij+harp2IN%sunlit(:)-1,:,:) = harp2JointHistogram
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                                          &
+             cospOUT%harp2_Retrieval_Flag_Fraction(ij+harp2IN%sunlit(:)-1,:) = harp2FlagFraction
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                                          &
+             cospOUT%harp2_Veff_Limit_Fraction(ij+harp2IN%sunlit(:)-1) = harp2VeffLimitFraction
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                                          &
+             cospOUT%harp2_Input_Clamped_Fraction(ij+harp2IN%sunlit(:)-1) = harp2InputClampedFraction
+       endif
+       ! Where it's night (or the sun is too low) the retrievals are undefined
+       if (harp2IN%nSunlit < harp2IN%Npoints) then
+          if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean))                                          &
+             cospOUT%harp2_Cloud_Fraction_Liquid_Mean(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+          if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean))                                          &
+             cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+          if (associated(cospOUT%harp2_Effective_Variance_Liquid_Mean))                                          &
+             cospOUT%harp2_Effective_Variance_Liquid_Mean(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+          if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                                          &
+             cospOUT%harp2_Reff_vs_Veff_Liquid(ij+harp2IN%notSunlit(:)-1,:,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                                          &
+             cospOUT%harp2_Retrieval_Flag_Fraction(ij+harp2IN%notSunlit(:)-1,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                                          &
+             cospOUT%harp2_Veff_Limit_Fraction(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                                          &
+             cospOUT%harp2_Input_Clamped_Fraction(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+       endif
+       ! Free up memory (if necessary)
+       if (allocated(harp2RetrievedFlag))      deallocate(harp2RetrievedFlag)
+       if (allocated(harp2RetrievedSize))      deallocate(harp2RetrievedSize)
+       if (allocated(harp2RetrievedVariance))  deallocate(harp2RetrievedVariance)
+       if (allocated(harp2InputClamped))       deallocate(harp2InputClamped)
+       if (allocated(harp2VeffAtLimit))        deallocate(harp2VeffAtLimit)
+       if (allocated(harp2CfLiquid))           deallocate(harp2CfLiquid)
+       if (allocated(harp2MeanSizeLiquid))     deallocate(harp2MeanSizeLiquid)
+       if (allocated(harp2MeanVarianceLiquid)) deallocate(harp2MeanVarianceLiquid)
+       if (allocated(harp2JointHistogram))     deallocate(harp2JointHistogram)
+       if (allocated(harp2FlagFraction))       deallocate(harp2FlagFraction)
+       if (allocated(harp2VeffLimitFraction))  deallocate(harp2VeffLimitFraction)
+       if (allocated(harp2InputClampedFraction)) deallocate(harp2InputClampedFraction)
+    endif
+
     ! RTTOV
     if (lrttov_column) then
        call rttov_column(rttovIN%nPoints,rttovIN%nLevels,rttovIN%nSubCols,rttovIN%q,    &
@@ -1619,6 +1789,16 @@ CONTAINS
        if (allocated(modisIN%pres))      deallocate(modisIN%pres)
     endif
 
+    if (Lharp2_subcolumn) then
+       call COSP_ASSIGN_harp2IN_CLEAN(harp2IN)
+       ! The column stage may have been switched off by cosp_errorCheck
+       if (allocated(harp2RetrievedFlag))     deallocate(harp2RetrievedFlag)
+       if (allocated(harp2RetrievedSize))     deallocate(harp2RetrievedSize)
+       if (allocated(harp2RetrievedVariance)) deallocate(harp2RetrievedVariance)
+       if (allocated(harp2InputClamped))      deallocate(harp2InputClamped)
+       if (allocated(harp2VeffAtLimit))       deallocate(harp2VeffAtLimit)
+    endif
+
     if (allocated(calipso_beta_tot))      deallocate(calipso_beta_tot)
     if (allocated(grLidar532_beta_tot))  deallocate(grLidar532_beta_tot)
     if (allocated(atlid_beta_tot))        deallocate(atlid_beta_tot) 
@@ -1639,7 +1819,7 @@ CONTAINS
   SUBROUTINE COSP_INIT(Lisccp, Lmodis, Lmisr, Lcloudsat, Lcalipso, LgrLidar532, Latlid, Lparasol, Lrttov,     &
        cloudsat_radar_freq, cloudsat_k2, cloudsat_use_gas_abs, cloudsat_do_ray,          &
        isccp_top_height, isccp_top_height_direction, surface_radar, rcfg, lusevgrid,     &
-       luseCSATvgrid, Nvgrid, Nlevels, cloudsat_micro_scheme)
+       luseCSATvgrid, Nvgrid, Nlevels, cloudsat_micro_scheme, Lharp2, harp2_lut_file)
 
     ! INPUTS
     logical,intent(in) :: Lisccp,Lmodis,Lmisr,Lcloudsat,Lcalipso,LgrLidar532,Latlid,Lparasol,Lrttov
@@ -1660,6 +1840,11 @@ CONTAINS
                                        ! vertical grid
     character(len=64),intent(in) :: &
        cloudsat_micro_scheme           ! Microphysical scheme used by CLOUDSAT
+    ! Optional inputs
+    logical,intent(in),optional :: &
+       Lharp2                          ! HARP2 simulator on/off switch
+    character(len=*),intent(in),optional :: &
+       harp2_lut_file                  ! Path to the HARP2 polarized phase function LUT
 
     ! OUTPUTS
     type(radar_cfg) :: rcfg
@@ -1709,6 +1894,15 @@ CONTAINS
     if (LgrLidar532) call cosp_grLidar532_init()
     if (Latlid) call cosp_atlid_init()
     if (Lparasol) call cosp_parasol_init()
+    if (present(Lharp2)) then
+       if (Lharp2) then
+          if (present(harp2_lut_file)) then
+             call cosp_harp2_init(harp2_lut_file)
+          else
+             call cosp_harp2_init('harp2_lut_670nm.txt')
+          endif
+       endif
+    endif
 
     linitialization = .FALSE.
   END SUBROUTINE COSP_INIT
@@ -1728,7 +1922,8 @@ CONTAINS
        Lcloudsat_column, Lcalipso_subcolumn, Lcalipso_column, Latlid_subcolumn,             &
        Latlid_column, LgrLidar532_subcolumn, LgrLidar532_column, Lrttov_subcolumn,        &
        Lrttov_column, Lparasol_subcolumn, Lparasol_column, Lradar_lidar_tcc,                &
-       Llidar_only_freq_cloud, Lcloudsat_tcc, Lcloudsat_tcc2, cospOUT, errorMessage, nError)
+       Llidar_only_freq_cloud, Lcloudsat_tcc, Lcloudsat_tcc2, Lharp2_subcolumn,             &
+       Lharp2_column, cospOUT, errorMessage, nError)
     
     ! Inputs
     type(cosp_column_inputs),intent(in) :: &
@@ -1759,7 +1954,9 @@ CONTAINS
          Lcloudsat_tcc,       & !
          Lcloudsat_tcc2,      & !
          Lradar_lidar_tcc,    & ! On/Off switch for joint Calipso/Cloudsat product
-         Llidar_only_freq_cloud ! On/Off switch for joint Calipso/Cloudsat product
+         Llidar_only_freq_cloud,& ! On/Off switch for joint Calipso/Cloudsat product
+         Lharp2_subcolumn,    & ! HARP2 subcolumn simulator on/off switch
+         Lharp2_column          ! HARP2 column simulator on/off switch
     type(cosp_outputs),intent(inout) :: &
          cospOUT                ! COSP Outputs
     character(len=256),dimension(100) :: errorMessage
@@ -2300,6 +2497,72 @@ CONTAINS
        endif
     endif
     
+    ! HARP2 simulator
+    if (Lharp2_subcolumn .or. Lharp2_column) then
+       alloc_status = .true.
+       if (nLUT_re == 0) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: HARP2 simulator: look-up table not loaded (call COSP_INIT with Lharp2 and harp2_lut_file)'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospIN%fracLiq)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%fracLiq has not been allocated'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospIN%tau_067)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%tau_067 has not been allocated'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospIN%reffLiq)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%reffLiq has not been allocated'
+          alloc_status = .false.
+       else if (any(cospIN%reffLiq < 0._wp)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%reffLiq contains values out of range (reffLiq<0), expected units (microns)'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospIN%veffLiq)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%veffLiq has not been allocated'
+          alloc_status = .false.
+       else if (any(cospIN%veffLiq < 0._wp)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospIN%veffLiq contains values out of range (veffLiq<0)'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospgridIN%sunlit)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospgridIN%sunlit has not been allocated'
+          alloc_status = .false.
+       endif
+       if (.not. allocated(cospgridIN%phalf)) then
+          nError=nError+1
+          errorMessage(nError) = 'ERROR: COSP input variable (HARP2 simulator): cospgridIN%phalf has not been allocated'
+          alloc_status = .false.
+       endif
+       if (.not. alloc_status) then
+          Lharp2_subcolumn = .false.
+          Lharp2_column    = .false.
+          if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean))                                          &
+               cospOUT%harp2_Cloud_Fraction_Liquid_Mean(:) = R_UNDEF
+          if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean))                                          &
+               cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean(:) = R_UNDEF
+          if (associated(cospOUT%harp2_Effective_Variance_Liquid_Mean))                                          &
+               cospOUT%harp2_Effective_Variance_Liquid_Mean(:) = R_UNDEF
+          if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                                          &
+               cospOUT%harp2_Reff_vs_Veff_Liquid(:,:,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                                          &
+               cospOUT%harp2_Retrieval_Flag_Fraction(:,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                                          &
+               cospOUT%harp2_Veff_Limit_Fraction(:) = R_UNDEF
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                                          &
+               cospOUT%harp2_Input_Clamped_Fraction(:) = R_UNDEF
+       endif
+    endif
+
     ! RTTOV
     if (Lrttov_column) then
        alloc_status = .true.

@@ -37,6 +37,7 @@
 !                               the module quickbeam_optics.
 ! Mar 2016 - D. Swales        - Added scops_ccfrac. Was previously hardcoded in prec_scops.f90.  
 ! Mar 2018 - R. Guzman        - Added LIDAR_NTYPE for the OPAQ diagnostics
+! Sep 2026 - HARP2 simulator histogram bins (back-ported from COSP v2.2)
 ! Apr 2018 - R. Guzman        - Added parameters for GROUND LIDAR and ATLID simulators
 !
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -267,6 +268,35 @@ MODULE MOD_COSP_CONFIG
          modis_histReffLiqCenters = reffICE_binCenters ! Effective radius bin centers
     real(wp),parameter,dimension(2,nReffICE) :: &
          modis_histReffLiqEdges = reffLIQ_binEdges     ! Effective radius bin edges
+
+    ! ####################################################################################
+    ! HARP2 simulator ReffLIQ/VeffLIQ joint-histogram information
+    ! The effective radius bins are defined explicitly (same edges as the MODIS liquid bins
+    ! of COSP v2.2, Pincus et al. 2023) so that they do not change with the COSP version.
+    ! The effective variance bins are finer above 0.1, where broad model distributions lie.
+    ! ####################################################################################
+    integer,parameter :: &
+         numHARP2ReffBins = 8,                       & ! Number of re bins for joint-histogram
+         numHARP2VeffBins = 13,                      & ! Number of ve bins for joint-histogram
+         numHARP2Flags    = 5                          ! Number of retrieval outcome flags
+    real(wp),parameter,dimension(numHARP2ReffBins+1) :: &
+         harp2_histReff = (/0.0, 4.0e-6, 8e-6, 1.0e-5, 1.25e-5, 1.5e-5, 2.0e-5, 3.0e-5, 1.0e-2/) ! Effective radius bin boundaries (m)
+    real(wp),parameter,dimension(2,numHARP2ReffBins) :: &
+         harp2_histReffEdges = reshape(source=(/harp2_histReff(1),((harp2_histReff(k),  &
+                                       l=1,2),k=2,numHARP2ReffBins),                     &
+                                       harp2_histReff(numHARP2ReffBins+1)/),              &
+                                       shape = (/2,numHARP2ReffBins/))
+    real(wp),parameter,dimension(numHARP2ReffBins) :: &
+         harp2_histReffCenters = (harp2_histReffEdges(1,:)+harp2_histReffEdges(2,:))/2._wp ! Effective radius bin centers (m)
+    real(wp),parameter,dimension(numHARP2VeffBins+1) :: &
+         harp2_histVeff = (/0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.125, 0.15, 0.175, 0.20, 0.25, 0.30, 0.35, 1.0/) ! Effective variance bin boundaries
+    real(wp),parameter,dimension(2,numHARP2VeffBins) :: &
+         harp2_histVeffEdges = reshape(source=(/harp2_histVeff(1),((harp2_histVeff(k),  &
+                                       l=1,2),k=2,numHARP2VeffBins),                     &
+                                       harp2_histVeff(numHARP2VeffBins+1)/),              &
+                                       shape = (/2,numHARP2VeffBins/))
+    real(wp),parameter,dimension(numHARP2VeffBins) :: &
+         harp2_histVeffCenters = (harp2_histVeffEdges(1,:)+harp2_histVeffEdges(2,:))/2._wp
 
     ! ####################################################################################
     ! CLOUDSAT reflectivity histogram information 

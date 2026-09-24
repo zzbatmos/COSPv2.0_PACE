@@ -9,6 +9,7 @@ actsim/:          LIDAR simulator source code
 icarus/:          ISCCP simulator source code
 MISR_simulator/:  MISR simulator source code
 MODIS_simulator/: MODIS simulator source code
+HARP2_simulator/: HARP2 (PACE) polarimetric cloudbow simulator source code
 parasol/:         PARASOL simulator source code
 quickbeam/:       RADAR simulator source code
 rttov/:           RTTOV simulator interface (RTTOV source is NOT distributed with COSP!)

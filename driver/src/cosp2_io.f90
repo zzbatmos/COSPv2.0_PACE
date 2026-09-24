@@ -7,7 +7,9 @@ module mod_cosp_io
        tau_binEdges,npres, pres_binBounds, pres_binCenters, pres_binEdges, nhgt,      &
        hgt_binBounds, hgt_binCenters, hgt_binEdges, reffLIQ_binCenters,vgrid_z,       &
        reffICE_binCenters, reffLIQ_binCenters, cloudsat_binCenters, PARASOL_SZA,      &
-       calipso_binCenters, grLidar532_binCenters, atlid_binCenters 
+       calipso_binCenters, grLidar532_binCenters, atlid_binCenters,                   &
+       numHARP2ReffBins, numHARP2VeffBins, harp2_histReffCenters, harp2_histVeffCenters,&
+       numHARP2Flags
   implicit none
 
 contains
@@ -24,7 +26,7 @@ contains
 
     integer :: fileID,status,ij
     integer,dimension(20)  :: dimID
-    integer,dimension(150) :: varID
+    integer,dimension(160) :: varID
     integer,dimension(Npoints) :: loc
     integer,dimension(Ncolumns) :: cosp_scol
     integer,dimension(2) :: bnds
@@ -73,6 +75,16 @@ contains
     if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
     status = nf90_def_dim(fileID,"REICE_MODIS",numMODISReffIceBins,dimID(16))
     if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid)) then
+       status = nf90_def_dim(fileID,"RELIQ_HARP2",numHARP2ReffBins,dimID(10))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_def_dim(fileID,"VEFF_HARP2",numHARP2VeffBins,dimID(11))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Retrieval_Flag_Fraction)) then
+       status = nf90_def_dim(fileID,"HARP2_FLAG",numHARP2Flags,dimID(9))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
 
     ! ---------------------------------------------------------------------------------------
     ! Define varaibles
@@ -1340,7 +1352,80 @@ contains
        if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status)) 
     endif    
     
-    
+    ! HARP2 simulator output
+    if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean)) then
+       status = nf90_def_var(fileID,"clwharp2",nf90_float, (/dimID(1)/),varID(150))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(150),"long_name","HARP2 Liquid Cloud Fraction (successful cloudbow retrievals)")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(150),"units",        "%")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean)) then
+       status = nf90_def_var(fileID,"reffclwharp2",nf90_float, (/dimID(1)/),varID(151))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(151),"long_name","HARP2 Polarimetric Liquid Cloud Particle Effective Radius")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(151),"units",        "m")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Effective_Variance_Liquid_Mean)) then
+       status = nf90_def_var(fileID,"veffclwharp2",nf90_float, (/dimID(1)/),varID(152))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(152),"long_name","HARP2 Polarimetric Liquid Cloud Particle Effective Variance")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(152),"units",        "1")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid)) then
+       status = nf90_def_var(fileID,"clharp2reffveff",nf90_float, (/dimID(1),dimID(10),dimID(11)/),varID(153))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(153),"long_name","HARP2 Joint-PDF of liquid effective radius and effective variance")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(153),"units",        "%")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_def_var(fileID,"RELIQ_HARP2",nf90_float, (/dimID(10)/),varID(154))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(154),"long_name","HARP2 Joint-PDF liquid effective radius bin centers")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(154),"units",        "m")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_def_var(fileID,"VEFF_HARP2",nf90_float, (/dimID(11)/),varID(155))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(155),"long_name","HARP2 Joint-PDF liquid effective variance bin centers")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(155),"units",        "1")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Retrieval_Flag_Fraction)) then
+       status = nf90_def_var(fileID,"harp2_flag_fraction",nf90_float, (/dimID(1),dimID(9)/),varID(156))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(156),"long_name","HARP2 fraction of subcolumns per retrieval outcome (0 clear, 1 cloudbow retrieval, 2 no cloudbow, 3 cloudbow not sampled, 4 fit failed)")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(156),"units",        "%")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_def_var(fileID,"HARP2_FLAG",nf90_int, (/dimID(9)/),varID(159))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(159),"long_name","HARP2 retrieval outcome flag")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Veff_Limit_Fraction)) then
+       status = nf90_def_var(fileID,"harp2_veff_limit_fraction",nf90_float, (/dimID(1)/),varID(157))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(157),"long_name","HARP2 fraction of subcolumns with a cloudbow retrieval whose effective variance is at a look-up table limit")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(157),"units",        "%")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Input_Clamped_Fraction)) then
+       status = nf90_def_var(fileID,"harp2_input_clamped_fraction",nf90_float, (/dimID(1)/),varID(158))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(158),"long_name","HARP2 fraction of subcolumns whose liquid re or ve lie outside the look-up table")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_att(fileID,varID(158),"units",        "%")
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+
     ! ---------------------------------------------------------------------------------------
     ! Exit define mode
     ! ---------------------------------------------------------------------------------------
@@ -1794,7 +1879,42 @@ contains
        if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))  
     endif
 
-    
+    ! HARP2 simulator output
+    if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean)) then
+       status = nf90_put_var(fileID,varID(150),cospOUT%harp2_Cloud_Fraction_Liquid_Mean)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean)) then
+       status = nf90_put_var(fileID,varID(151),cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Effective_Variance_Liquid_Mean)) then
+       status = nf90_put_var(fileID,varID(152),cospOUT%harp2_Effective_Variance_Liquid_Mean)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid)) then
+       status = nf90_put_var(fileID,varID(153),cospOUT%harp2_Reff_vs_Veff_Liquid)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_var(fileID,varID(154),harp2_histReffCenters)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_var(fileID,varID(155),harp2_histVeffCenters)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Retrieval_Flag_Fraction)) then
+       status = nf90_put_var(fileID,varID(156),cospOUT%harp2_Retrieval_Flag_Fraction)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+       status = nf90_put_var(fileID,varID(159),(/ (ij, ij = 0, numHARP2Flags-1) /))
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Veff_Limit_Fraction)) then
+       status = nf90_put_var(fileID,varID(157),cospOUT%harp2_Veff_Limit_Fraction)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+    if (associated(cospOUT%harp2_Input_Clamped_Fraction)) then
+       status = nf90_put_var(fileID,varID(158),cospOUT%harp2_Input_Clamped_Fraction)
+       if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))
+    endif
+
     ! Close file
     status = nf90_close(fileID)
     if (status .ne. nf90_NoERR) print*,trim(nf90_strerror(status))

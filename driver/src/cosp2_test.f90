@@ -30,6 +30,7 @@
 ! March 2016 - D. Swales - Original version
 ! April 2018 - R. Guzman - Added OPAQ diagnostics and Ground LIDar (GLID) simulator
 ! April 2018 - R. Guzman - Added ATLID simulator
+! Sep 2026   - HARP2 simulator (back-ported from COSP v2.2)
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 program cosp2_test
   use cosp_kinds,          only: wp                         
@@ -45,7 +46,8 @@ program cosp2_test
                                  tau_binBoundsV1p4,tau_binEdgesV1p4, tau_binCentersV1p4,  &
                                  grLidar532_histBsct,atlid_histBsct,vgrid_zu,vgrid_zl,    & 
                                  Nlvgrid_local  => Nlvgrid,                               &
-                                 vgrid_z_local  => vgrid_z,cloudsat_preclvl
+                                 vgrid_z_local  => vgrid_z,cloudsat_preclvl,              &
+                                 numHARP2ReffBins,numHARP2VeffBins,numHARP2Flags
   use cosp_phys_constants, only: amw,amd,amO3,amCO2,amCH4,amN2O,amCO
   use mod_cosp_io,         only: nc_read_input_file,write_cosp2_output
   USE mod_quickbeam_optics,only: size_distribution,hydro_class_init,quickbeam_optics,     &
@@ -161,12 +163,17 @@ program cosp2_test
        dinput                       ! Directory where the input files are located
   character(len=600) :: &
        fileIN                       ! dinput+finput
+  character(len=512) :: &
+       harp2_lut_file = '../../src/simulator/HARP2_simulator/harp2_lut_670nm.txt' ! Polarized phase function LUT
+  real(wp) :: &
+       harp2_veffLiq  = 0.10_wp     ! Liquid effective variance assumed by the example optics
   namelist/COSP_INPUT/overlap, isccp_topheight, isccp_topheight_direction, npoints,      &
        npoints_it, ncolumns, nlevels, use_vgrid, Nlvgrid, csat_vgrid, dinput, finput,    &
        foutput, cloudsat_radar_freq, surface_radar, cloudsat_use_gas_abs,cloudsat_do_ray,&
        cloudsat_k2, cloudsat_micro_scheme, lidar_ice_type, use_precipitation_fluxes,     &
        rttov_platform, rttov_satellite, rttov_Instrument, rttov_Nchannels,               &
-       rttov_Channels, rttov_Surfem, rttov_ZenAng, co2, ch4, n2o, co
+       rttov_Channels, rttov_Surfem, rttov_ZenAng, co2, ch4, n2o, co,                     &
+       harp2_lut_file, harp2_veffLiq
 
   ! Output namelist
   logical :: Lcfaddbze94,Ldbze94,Latb532,LcfadLidarsr532,Lclcalipso,Lclhcalipso,         &
@@ -190,6 +197,13 @@ program cosp2_test
              Lclmodis,Ltbrttov,Lptradarflag0,Lptradarflag1,Lptradarflag2,Lptradarflag3,  &
              Lptradarflag4,Lptradarflag5,Lptradarflag6,Lptradarflag7,Lptradarflag8,      &
              Lptradarflag9,Lradarpia
+  logical :: Lclwharp2        = .false., & ! HARP2 cloudbow (liquid) cloud fraction
+             Lreffclwharp2    = .false., & ! HARP2 polarimetric liquid effective radius
+             Lveffclwharp2    = .false., & ! HARP2 polarimetric liquid effective variance
+             Lclharp2reffveff = .false., & ! HARP2 joint histogram of re and ve
+             Lharp2flagfrac   = .false., & ! HARP2 fraction of subcolumns per retrieval outcome
+             Lharp2vefflimfrac= .false., & ! HARP2 fraction of retrievals with ve at table limit
+             Lharp2clampfrac  = .false.    ! HARP2 fraction of subcolumns with clamped inputs
   namelist/COSP_OUTPUT/Lcfaddbze94,Ldbze94,Latb532,LcfadLidarsr532,Lclcalipso,           &
                        Lclhcalipso,Lcllcalipso,Lclmcalipso,Lcltcalipso,LparasolRefl,     &
                        Lclcalipsoliq,Lclcalipsoice,Lclcalipsoun,Lclcalipsotmp,           &
@@ -214,7 +228,9 @@ program cosp2_test
                        Lreffclimodis,Lpctmodis,Llwpmodis,Liwpmodis,Lclmodis,Ltbrttov,    &
                        Lptradarflag0,Lptradarflag1,Lptradarflag2,Lptradarflag3,          &
                        Lptradarflag4,Lptradarflag5,Lptradarflag6,Lptradarflag7,          &
-                       Lptradarflag8,Lptradarflag9,Lradarpia
+                       Lptradarflag8,Lptradarflag9,Lradarpia,                            &
+                       Lclwharp2,Lreffclwharp2,Lveffclwharp2,Lclharp2reffveff,           &
+                       Lharp2flagfrac,Lharp2vefflimfrac,Lharp2clampfrac
 
   ! Local variables
   logical :: &
@@ -228,7 +244,8 @@ program cosp2_test
        latlid      = .false., & !
        lcloudsat   = .false., & !
        lrttov      = .false., & !
-       lparasol    = .false.    !
+       lparasol    = .false., & !
+       lharp2      = .false.    !
   type(size_distribution) :: &
        sd                ! Hydrometeor description
   type(radar_cfg) :: &
@@ -354,6 +371,8 @@ program cosp2_test
        Lradarpia) Lcloudsat = .true.
   if (Lparasolrefl) Lparasol = .true.
   if (Ltbrttov) Lrttov = .true.
+  if (Lclwharp2 .or. Lreffclwharp2 .or. Lveffclwharp2 .or. Lclharp2reffveff .or.          &
+      Lharp2flagfrac .or. Lharp2vefflimfrac .or. Lharp2clampfrac) Lharp2 = .true.
   
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -384,7 +403,8 @@ program cosp2_test
   call COSP_INIT(Lisccp, Lmodis, Lmisr, Lcloudsat, Lcalipso, LgrLidar532, Latlid,        &
        Lparasol, Lrttov, cloudsat_radar_freq, cloudsat_k2, cloudsat_use_gas_abs,         &
        cloudsat_do_ray, isccp_topheight, isccp_topheight_direction, surface_radar,       &
-       rcfg_cloudsat, use_vgrid, csat_vgrid, Nlvgrid, Nlevels, cloudsat_micro_scheme)
+       rcfg_cloudsat, use_vgrid, csat_vgrid, Nlvgrid, Nlevels, cloudsat_micro_scheme,    &
+       Lharp2=Lharp2, harp2_lut_file=trim(harp2_lut_file))
   call cpu_time(driver_time(3))
   
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -413,7 +433,9 @@ program cosp2_test
        LcfadDbze94, Ldbze94, Lparasolrefl,                                               &
        Ltbrttov, Lptradarflag0,Lptradarflag1,Lptradarflag2,Lptradarflag3,Lptradarflag4,   &
        Lptradarflag5,Lptradarflag6,Lptradarflag7,Lptradarflag8,Lptradarflag9,Lradarpia,&
-       Npoints, Ncolumns, Nlevels, Nlvgrid_local, rttov_Nchannels, cospOUT)
+       Npoints, Ncolumns, Nlevels, Nlvgrid_local, rttov_Nchannels, cospOUT,              &
+       Lclwharp2, Lreffclwharp2, Lveffclwharp2, Lclharp2reffveff, Lharp2flagfrac,        &
+       Lharp2vefflimfrac, Lharp2clampfrac)
 
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   ! Break COSP up into pieces and loop over each COSP 'chunk'.
@@ -463,6 +485,7 @@ program cosp2_test
      cospstateIN%sunlit      = sunlit(start_idx:end_idx)            ! 0-1
      cospstateIN%skt         = skt(start_idx:end_idx)               ! K
      cospstateIN%surfelev    = surfelev(start_idx:end_idx)          ! m
+     cospstateIN%sza         = 0._wp ! Solar zenith angle (HARP2). Hard coded to zero, as in COSP v2.2.
      cospstateIN%land        = landmask(start_idx:end_idx)          ! 0-1 (*note* model specific)
      cospstateIN%qv          = sh(start_idx:end_idx,Nlevels:1:-1)   ! kg/kg
      cospstateIN%at          = T(start_idx:end_idx,Nlevels:1:-1)    ! K
@@ -778,7 +801,7 @@ contains
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
     ! 0.67 micron optical depth
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    if (Lisccp .or. Lmisr .or. Lmodis) then
+    if (Lisccp .or. Lmisr .or. Lmodis .or. Lharp2) then
        call cosp_simulator_optics(nPoints,nColumns,nLevels,cospIN%frac_out,dtau_c,dtau_s,  &
                                   cospIN%tau_067)
     endif
@@ -877,9 +900,9 @@ contains
     endif
    
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    ! MODIS optics
+    ! MODIS and HARP2 optics
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-    if (Lmodis) then
+    if (Lmodis .or. Lharp2) then
        allocate(MODIS_cloudWater(nPoints,nColumns,nLevels),                                &
                 MODIS_cloudIce(nPoints,nColumns,nLevels),                                  &
                 MODIS_waterSize(nPoints,nColumns,nLevels),                                 &
@@ -904,10 +927,31 @@ contains
             MODIS_cloudIce, MODIS_waterSize, MODIS_iceSize, cospIN%tau_067,                &
             MODIS_opticalThicknessLiq, MODIS_opticalThicknessIce)
        
-       ! Compute assymetry parameter and single scattering albedo 
-       call modis_optics(nPoints, nLevels, nColumns, MODIS_opticalThicknessLiq,            &
-            MODIS_waterSize*1.0e6_wp, MODIS_opticalThicknessIce,                           &
-            MODIS_iceSize*1.0e6_wp, cospIN%fracLiq, cospIN%asym, cospIN%ss_alb)
+       if (Lmodis) then
+          ! Compute assymetry parameter and single scattering albedo 
+          call modis_optics(nPoints, nLevels, nColumns, MODIS_opticalThicknessLiq,         &
+               MODIS_waterSize*1.0e6_wp, MODIS_opticalThicknessIce,                        &
+               MODIS_iceSize*1.0e6_wp, cospIN%fracLiq, cospIN%asym, cospIN%ss_alb)
+       else
+          ! Liquid fraction of the optical thickness only (as in modis_optics)
+          where(MODIS_opticalThicknessLiq + MODIS_opticalThicknessIce > 0._wp)
+             cospIN%fracLiq = MODIS_opticalThicknessLiq /                                  &
+                              (MODIS_opticalThicknessLiq + MODIS_opticalThicknessIce)
+          elsewhere
+             cospIN%fracLiq = 0._wp
+          endwhere
+       endif
+
+       ! HARP2: liquid droplet size distribution (effective radius in microns and
+       ! effective variance). The example optics assume a constant effective variance.
+       if (Lharp2) then
+          cospIN%reffLiq = MODIS_waterSize*1.0e6_wp
+          where(MODIS_opticalThicknessLiq > 0._wp)
+             cospIN%veffLiq = harp2_veffLiq
+          elsewhere
+             cospIN%veffLiq = 0._wp
+          endwhere
+       endif
        
        ! Deallocate memory
        deallocate(MODIS_cloudWater,MODIS_cloudIce,MODIS_WaterSize,MODIS_iceSize,           &
@@ -936,7 +980,7 @@ contains
     y%Nrefl    = PARASOL_NREFL
     allocate(y%frac_out(npoints,       ncolumns,nlevels))
 
-    if (Lmodis .or. Lmisr .or. Lisccp) then
+    if (Lmodis .or. Lmisr .or. Lisccp .or. Lharp2) then
        allocate(y%tau_067(npoints,        ncolumns,nlevels),&
                 y%emiss_11(npoints,       ncolumns,nlevels))
     endif
@@ -978,6 +1022,11 @@ contains
                 y%asym(npoints,           ncolumns,nlevels),&
                 y%ss_alb(npoints,         ncolumns,nlevels))
     endif
+    if (Lharp2) then
+       if (.not. allocated(y%fracLiq)) allocate(y%fracLiq(npoints,ncolumns,nlevels))
+       allocate(y%reffLiq(npoints,        ncolumns,nlevels),&
+                y%veffLiq(npoints,        ncolumns,nlevels))
+    endif
     
 
   end subroutine construct_cospIN
@@ -1000,7 +1049,7 @@ contains
              y%v_sfc(npoints),y%lat(npoints),y%lon(nPoints),y%emis_sfc(nchan),           &
              y%cloudIce(nPoints,nLevels),y%cloudLiq(nPoints,nLevels),y%surfelev(npoints),&
              y%fl_snow(nPoints,nLevels),y%fl_rain(nPoints,nLevels),y%seaice(npoints),    &
-             y%tca(nPoints,nLevels),y%hgt_matrix_half(npoints,nlevels+1))
+             y%tca(nPoints,nLevels),y%hgt_matrix_half(npoints,nlevels+1),y%sza(npoints))
 
   end subroutine construct_cospstateIN
 
@@ -1040,7 +1089,10 @@ contains
                                     Ltbrttov, Lptradarflag0,Lptradarflag1,Lptradarflag2,           &
                                     Lptradarflag3,Lptradarflag4,Lptradarflag5,           &
                                     Lptradarflag6,Lptradarflag7,Lptradarflag8,           &
-                                    Lptradarflag9,Lradarpia,Npoints,Ncolumns,Nlevels,Nlvgrid,Nchan,x)
+                                    Lptradarflag9,Lradarpia,Npoints,Ncolumns,Nlevels,Nlvgrid,Nchan,x,&
+                                    Lclwharp2,Lreffclwharp2,Lveffclwharp2,               &
+                                    Lclharp2reffveff,Lharp2flagfrac,Lharp2vefflimfrac,   &
+                                    Lharp2clampfrac)
      ! Inputs
      logical,intent(in) :: &
          Lpctisccp,        & ! ISCCP mean cloud top pressure
@@ -1148,7 +1200,14 @@ contains
          Lptradarflag7,    & ! CLOUDSAT 
          Lptradarflag8,    & ! CLOUDSAT 
          Lptradarflag9,    & ! CLOUDSAT 
-         Lradarpia           ! CLOUDSAT 
+         Lradarpia,        & ! CLOUDSAT 
+         Lclwharp2,        & ! HARP2 cloudbow (liquid) cloud fraction
+         Lreffclwharp2,    & ! HARP2 polarimetric liquid effective radius
+         Lveffclwharp2,    & ! HARP2 polarimetric liquid effective variance
+         Lclharp2reffveff, & ! HARP2 joint histogram of re and ve
+         Lharp2flagfrac,   & ! HARP2 fraction of subcolumns per retrieval outcome
+         Lharp2vefflimfrac,& ! HARP2 fraction of retrievals with ve at the table limit
+         Lharp2clampfrac     ! HARP2 fraction of subcolumns with clamped inputs
          
      integer,intent(in) :: &
           Npoints,         & ! Number of sampled points
@@ -1311,6 +1370,15 @@ contains
             
     ! RTTOV
     if (Ltbrttov) allocate(x%rttov_tbs(Npoints,Nchan))
+
+    ! HARP2 simulator
+    if (Lclwharp2)        allocate(x%harp2_Cloud_Fraction_Liquid_Mean(Npoints))
+    if (Lreffclwharp2)    allocate(x%harp2_Cloud_Particle_Size_Liquid_Mean(Npoints))
+    if (Lveffclwharp2)    allocate(x%harp2_Effective_Variance_Liquid_Mean(Npoints))
+    if (Lclharp2reffveff) allocate(x%harp2_Reff_vs_Veff_Liquid(Npoints,numHARP2ReffBins,numHARP2VeffBins))
+    if (Lharp2flagfrac)   allocate(x%harp2_Retrieval_Flag_Fraction(Npoints,numHARP2Flags))
+    if (Lharp2vefflimfrac) allocate(x%harp2_Veff_Limit_Fraction(Npoints))
+    if (Lharp2clampfrac)  allocate(x%harp2_Input_Clamped_Fraction(Npoints))
  
   end subroutine construct_cosp_outputs
   
@@ -1338,6 +1406,8 @@ contains
     if (allocated(y%asym))                deallocate(y%asym)
     if (allocated(y%ss_alb))              deallocate(y%ss_alb)
     if (allocated(y%fracLiq))             deallocate(y%fracLiq)
+    if (allocated(y%reffLiq))             deallocate(y%reffLiq)
+    if (allocated(y%veffLiq))             deallocate(y%veffLiq)
     if (allocated(y%beta_mol_grLidar532)) deallocate(y%beta_mol_grLidar532)
     if (allocated(y%betatot_grLidar532))  deallocate(y%betatot_grLidar532)
     if (allocated(y%tau_mol_grLidar532))  deallocate(y%tau_mol_grLidar532)
@@ -1376,6 +1446,7 @@ contains
     if (allocated(y%tca))             deallocate(y%tca)
     if (allocated(y%hgt_matrix_half)) deallocate(y%hgt_matrix_half)    
     if (allocated(y%surfelev))        deallocate(y%surfelev)
+    if (allocated(y%sza))             deallocate(y%sza)
     
   end subroutine destroy_cospstateIN
   
@@ -1689,6 +1760,34 @@ contains
      if (associated(y%modis_Optical_thickness_vs_ReffICE))                   then
         deallocate(y%modis_Optical_thickness_vs_ReffICE)
         nullify(y%modis_Optical_thickness_vs_ReffICE)
+     endif
+     if (associated(y%harp2_Cloud_Fraction_Liquid_Mean))                     then
+        deallocate(y%harp2_Cloud_Fraction_Liquid_Mean)
+        nullify(y%harp2_Cloud_Fraction_Liquid_Mean)
+     endif
+     if (associated(y%harp2_Cloud_Particle_Size_Liquid_Mean))                then
+        deallocate(y%harp2_Cloud_Particle_Size_Liquid_Mean)
+        nullify(y%harp2_Cloud_Particle_Size_Liquid_Mean)
+     endif
+     if (associated(y%harp2_Effective_Variance_Liquid_Mean))                 then
+        deallocate(y%harp2_Effective_Variance_Liquid_Mean)
+        nullify(y%harp2_Effective_Variance_Liquid_Mean)
+     endif
+     if (associated(y%harp2_Reff_vs_Veff_Liquid))                            then
+        deallocate(y%harp2_Reff_vs_Veff_Liquid)
+        nullify(y%harp2_Reff_vs_Veff_Liquid)
+     endif
+     if (associated(y%harp2_Retrieval_Flag_Fraction))                        then
+        deallocate(y%harp2_Retrieval_Flag_Fraction)
+        nullify(y%harp2_Retrieval_Flag_Fraction)
+     endif
+     if (associated(y%harp2_Veff_Limit_Fraction))                            then
+        deallocate(y%harp2_Veff_Limit_Fraction)
+        nullify(y%harp2_Veff_Limit_Fraction)
+     endif
+     if (associated(y%harp2_Input_Clamped_Fraction))                         then
+        deallocate(y%harp2_Input_Clamped_Fraction)
+        nullify(y%harp2_Input_Clamped_Fraction)
      endif
         
    end subroutine destroy_cosp_outputs
