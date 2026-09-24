@@ -4,6 +4,9 @@ The CFMIP Observation Simulator Package (COSP) takes the models representation o
 atmosphere and simulates the retrievals for several passive (ISCCP, MISR and MODIS)
 and active (CloudSat (radar) and CALIPSO (lidar)) sensors.
 
+This version also includes a simulator of the polarimetric (cloudbow) retrieval of liquid-cloud droplet
+effective radius and effective variance from HARP2 on PACE; see `src/simulator/HARP2_simulator/README.md`.
+
 An overview of COSP is provided in the [COSP1 BAMS paper](https://doi.org/10.1175/2011BAMS2856.1).
 
 COSP Version 2 (COSP2) is a major reorganization and modernization of the previous generation of COSP. For a detailed description, see the [COSP2 GMD paper](https://doi.org/10.5194/gmd-11-77-2018).

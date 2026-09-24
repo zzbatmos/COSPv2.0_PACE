@@ -9,6 +9,7 @@ ISCCP_PATH   = $(SIM_PATH)/icarus
 MISR_PATH    = $(SIM_PATH)/MISR_simulator
 MODIS_PATH   = $(SIM_PATH)/MODIS_simulator
 PARASOL_PATH = $(SIM_PATH)/parasol
+HARP2_PATH   = $(SIM_PATH)/HARP2_simulator
 
 # Makefile.rttov needed to define the following: 
 # RTTOVDIR, FFLAGS, LIBDIR, LIBS, LLIBS, LDFLAGS_NETCDF, LDFLAGS_HDF5, LDFLAGS_ARCH
@@ -16,7 +17,7 @@ ifdef RTTOV
 include Makefile.rttov
 endif
 
-VPATH = $(SRC_PATH):$(HOOKS):$(SIM_PATH):$(RT_PATH):$(RS_PATH):$(CS_PATH):$(ISCCP_PATH):$(MISR_PATH):$(MODIS_PATH):$(PARASOL_PATH)
+VPATH = $(SRC_PATH):$(HOOKS):$(SIM_PATH):$(RT_PATH):$(RS_PATH):$(CS_PATH):$(ISCCP_PATH):$(MISR_PATH):$(MODIS_PATH):$(PARASOL_PATH):$(HARP2_PATH)
 
 # Example subcolumn generaton and mapping to optical properties, following COSP 1.4
 SUBCOLS = ../subsample_and_optics_example
@@ -64,7 +65,8 @@ COSP_OBJS = cosp.o cosp_config.o cosp_stats.o cosp_constants.o cosp_errorHandlin
             cosp_isccp_interface.o icarus.o cosp_misr_interface.o MISR_simulator.o               \
             cosp_modis_interface.o  modis_simulator.o cosp_parasol_interface.o  parasol.o        \
             cosp_calipso_interface.o  lidar_simulator.o cosp_cloudsat_interface.o quickbeam.o    \
-            cosp_grLidar532_interface.o cosp_atlid_interface.o
+            cosp_grLidar532_interface.o cosp_atlid_interface.o                                  \
+            cosp_harp2_interface.o harp2_simulator.o
 
 # Add RTTOV files appropriately.
 ifdef RTTOV
@@ -98,7 +100,8 @@ cosp.o : cosp_kinds.o cosp_modis_interface.o cosp_constants.o                   
          cosp_cloudsat_interface.o  cosp_stats.o                                           \
          cosp_parasol_interface.o                                                          \
          quickbeam.o MISR_simulator.o lidar_simulator.o                                    \
-         parasol.o icarus.o cosp_grLidar532_interface.o cosp_atlid_interface.o
+         parasol.o icarus.o cosp_grLidar532_interface.o cosp_atlid_interface.o             \
+         cosp_harp2_interface.o harp2_simulator.o
 
 # Conditionally add dependencies on the STUB or actual RTTOV simulator.
 ifdef RTTOV
@@ -118,6 +121,8 @@ cosp_misr_interface.o       : cosp_kinds.o cosp_stats.o
 MISR_simulator.o            : cosp_kinds.o cosp_config.o cosp_stats.o
 cosp_modis_interface.o      : cosp_kinds.o cosp_config.o modis_simulator.o cosp_stats.o
 modis_simulator.o           : cosp_kinds.o cosp_config.o cosp_stats.o
+cosp_harp2_interface.o      : cosp_kinds.o cosp_constants.o cosp_errorHandling.o harp2_simulator.o cosp_stats.o
+harp2_simulator.o           : cosp_kinds.o cosp_config.o cosp_constants.o cosp_stats.o
 cosp_parasol_interface.o    : cosp_kinds.o cosp_stats.o
 parasol.o                   : cosp_kinds.o cosp_config.o cosp_constants.o
 cosp_calipso_interface.o    : cosp_kinds.o lidar_simulator.o cosp_stats.o

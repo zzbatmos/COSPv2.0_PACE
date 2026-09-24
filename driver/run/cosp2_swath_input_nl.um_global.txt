@@ -100,6 +100,15 @@
   N_SWATHS_ATLID=2,
   SWATH_LOCALTIMES_ATLID=7.25,19.5,
   SWATH_WIDTHS_ATLID=2000,2000,
+  N_SWATHS_HARP2=1,
+  SWATH_LOCALTIMES_HARP2=13.5,
+  SWATH_WIDTHS_HARP2=2000,
+  !----------------------------------------------------------------------------------
+  !-------------- HARP2 inputs
+  !----------------------------------------------------------------------------------
+  harp2_lut_file='../../src/simulator/HARP2_simulator/harp2_lut_670nm.txt', ! Polarized
+                         ! phase function LUT (made by harp2_lut_generator.py)
+  harp2_veffLiq=0.10,    ! Liquid effective variance assumed by the example optics
   !----------------------------------------------------------------------------------
   !-------------- RTTOV inputs
   !----------------------------------------------------------------------------------

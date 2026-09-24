@@ -85,6 +85,11 @@ jobs:
         ${F90} --version
         cd build
         make -j driver
+    # HARP2 simulator unit tests (forward model and cloudbow retrieval)
+    - name: HARP2 simulator unit tests
+      run: |
+        cd unit_testing/harp2
+        make test
     # Retrieve and expand large data files
     - name: Retrieve input files and KGOs
       run: |

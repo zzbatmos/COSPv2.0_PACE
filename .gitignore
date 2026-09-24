@@ -8,3 +8,4 @@ driver/data/outputs/UKMO/*.nc
 driver/data/outputs/UKMO/*.png
 !driver/data/outputs/cosp2_output_um.gfortran.kgo.nc
 !driver/data/outputs/UKMO/*.out
+unit_testing/harp2/test_harp2_simulator

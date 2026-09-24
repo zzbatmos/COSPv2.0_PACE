@@ -113,7 +113,7 @@ MODULE MOD_COSP_STATS
           q2m,                 & ! 2-meter specific humidity              (kg/kg)
           lat,                 & ! Latitude                               (deg)
           lon,                 & ! Longitude                              (deg)
-          sza,                 & ! Solar Zenith Angle in degrees
+          sza,                 & ! Solar Zenith Angle in degrees (also used by HARP2)
           psfc,                & ! Surface pressure                       (Pa)
           rttov_sfcmask          ! Mask for RTTOV surface types (0 for ocean, 1 for land, 2 for sea ice)
 
@@ -190,6 +190,8 @@ MODULE MOD_COSP_STATS
           fracLiq,             & ! Fraction of optical-depth due to liquid (MODIS)
           asym,                & ! Assymetry parameter @ 3.7micron (MODIS)
           ss_alb,              & ! Single-scattering albedo @ 3.7micron (MODIS)
+          reffLiq,             & ! Liquid effective radius (microns) (HARP2)
+          veffLiq,             & ! Liquid effective variance (HARP2)
           betatot_calipso,     & ! Lidar backscatter coefficient (calipso @ 532nm)
           betatot_grLidar532,  & ! Lidar backscatter coefficient (ground-lidar @ 532nm)
           betatot_atlid,       & ! Lidar backscatter coefficient (atlid @ 355nm)
@@ -217,7 +219,7 @@ MODULE MOD_COSP_STATS
           rcfg_cloudsat          ! Radar configuration information (CLOUDSAT)
      type(rttov_cfg),dimension(:),pointer :: &
           cfg_rttov              ! RTTOV configuration information (multiple instruments)
-     type(swath_inputs),dimension(6) :: & ! Could be a pointer but fine
+     type(swath_inputs),dimension(7) :: & ! ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS, HARP2
           cospswathsIN 
   end type cosp_optical_inputs
 

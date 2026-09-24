@@ -313,6 +313,29 @@ MODULE MOD_COSP_CONFIG
          modis_histIWPEdges = IWP_binEdges             ! IWP bin edges     
 
     ! ####################################################################################
+    ! HARP2 simulator ReffLIQ/VeffLIQ joint-histogram information
+    ! The effective radius bins are the same as for the MODIS simulator.
+    ! ####################################################################################
+    integer,parameter :: &
+         numHARP2ReffBins = nReffLiq,                & ! Number of re bins for joint-histogram
+         numHARP2VeffBins = 8                          ! Number of ve bins for joint-histogram
+    real(wp),parameter,dimension(numHARP2ReffBins+1) :: &
+         harp2_histReff = reffLIQ_binBounds            ! Effective radius bin boundaries (m)
+    real(wp),parameter,dimension(numHARP2ReffBins) :: &
+         harp2_histReffCenters = reffLIQ_binCenters    ! Effective radius bin centers (m)
+    real(wp),parameter,dimension(2,numHARP2ReffBins) :: &
+         harp2_histReffEdges = reffLIQ_binEdges        ! Effective radius bin edges (m)
+    real(wp),parameter,dimension(numHARP2VeffBins+1) :: &
+         harp2_histVeff = (/0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.15, 0.20, 1.0/) ! Effective variance bin boundaries
+    real(wp),parameter,dimension(2,numHARP2VeffBins) :: &
+         harp2_histVeffEdges = reshape(source=(/harp2_histVeff(1),((harp2_histVeff(k),  &
+                                       l=1,2),k=2,numHARP2VeffBins),                     &
+                                       harp2_histVeff(numHARP2VeffBins+1)/),              &
+                                       shape = (/2,numHARP2VeffBins/))
+    real(wp),parameter,dimension(numHARP2VeffBins) :: &
+         harp2_histVeffCenters = (harp2_histVeffEdges(1,:)+harp2_histVeffEdges(2,:))/2._wp
+
+    ! ####################################################################################
     ! CLOUDSAT reflectivity histogram information 
     ! ####################################################################################
     integer,parameter :: &
