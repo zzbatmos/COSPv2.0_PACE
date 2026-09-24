@@ -18,6 +18,7 @@ retrieved quantities therefore comes from the radiative transfer; it is not pres
 | `../cosp_harp2_interface.F90` | Module `mod_cosp_harp2_interface`: parameters, LUT reader, viewing geometry, swath and daylight masks |
 | `harp2_lut_generator.py` | Generates the Mie look-up table with [miepython](https://github.com/scottprahl/miepython) |
 | `harp2_lut_670nm.txt` | Look-up table used by default (670 nm) |
+| `plot_harp2_lut.py`, `figures/` | Plots of -P12 from the table and a convergence check of its size integration |
 | `../../../unit_testing/harp2/` | Standalone unit tests (`make test`) |
 
 ## Method
@@ -154,6 +155,14 @@ The generator computes the neglected fraction of geometric cross section outside
 radius range analytically (incomplete gamma function) and refuses to run if it exceeds
 1e-6 (it is 2e-8 for the distributed table). Other bands (e.g. 870 nm) can be produced
 with `--wavelength`, `--m-real` and `--m-imag`. Generation takes about 11 minutes.
+
+To plot -P12 from the table and check that the size average leaves no interference
+ripple, run `MIEPYTHON_USE_JIT=1 python3 plot_harp2_lut.py --check` (about 10 minutes;
+without `--check` only the overview is drawn). The check compares the table with an
+independent integration with a 4x finer size-parameter step on a 0.05 degree grid, for
+CER/CEV = 10/0.01, 25/0.01 and 10/0.10: the largest differences are 0.15%, 0.03% and 0.07%
+of the peak, and linear interpolation of the 0.25 degree grid adds at most 0.46%. The
+figures are in `figures/`.
 
 ## Limitations and possible extensions
 
