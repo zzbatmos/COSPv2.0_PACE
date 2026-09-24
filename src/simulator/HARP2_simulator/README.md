@@ -59,6 +59,12 @@ subcolumn gets one of these outcomes:
 | 3 | Cloudy, but the cloudbow window is not sampled by the viewing geometry |
 | 4 | Cloudbow detected, but the fit failed (poor fit, or re at the edge of the table) |
 
+Two further per-subcolumn diagnostics make table saturation visible instead of silent:
+**input clamped** (liquid layers with re or ve outside the table carry at least 1% of the
+polarized signal; the forward model then uses the nearest table edge) and **ve at a table
+limit** (a successful retrieval whose ve is 0.01 or 0.40). Retrievals at a ve limit are
+kept in the means and histograms but counted separately.
+
 Because the polarized signal is single-scattered, it comes from roughly the top
 `1/m` (a few tenths) of optical depth of the cloud. The retrieved re is therefore more
 cloud-top weighted than the MODIS 3.7 micron retrieval, and vertical variations of re
@@ -71,7 +77,9 @@ allocated (30 degrees otherwise). There are no retrievals for solar zenith angle
 75 degrees. `harp2_subcolumn` accepts any set of view angles, so other geometries (e.g.
 cross-track position) can be supplied by the caller.
 
-All retrieval and geometry parameters are set in `COSP_HARP2_INIT`.
+All retrieval and geometry parameters are set in `COSP_HARP2_INIT`. HARP2 orbit swaths
+are given in their own input component, `cospIN%harp2_swathIN`, so the six-element
+`cospIN%cospswathsIN` array used by other simulators (and by host models) is unchanged.
 
 ## Inputs
 
@@ -97,10 +105,19 @@ variances outside the table are clamped to its edges in the forward model.
 | `harp2_Cloud_Fraction_Liquid_Mean` | `clwharp2` | % | Fraction of subcolumns with a successful cloudbow retrieval |
 | `harp2_Cloud_Particle_Size_Liquid_Mean` | `reffclwharp2` | m | Mean retrieved effective radius |
 | `harp2_Effective_Variance_Liquid_Mean` | `veffclwharp2` | 1 | Mean retrieved effective variance |
-| `harp2_Reff_vs_Veff_Liquid` | `clharp2reffveff` | % | Joint histogram of re (MODIS liquid bins) and ve |
+| `harp2_Reff_vs_Veff_Liquid` | `clharp2reffveff` | % | Joint histogram of re and ve |
+| `harp2_Retrieval_Flag_Fraction` | `harp2_flag_fraction` | % | Fraction of subcolumns per outcome flag 0 to 4 (sums to 100) |
+| `harp2_Veff_Limit_Fraction` | `harp2_veff_limit_fraction` | % | Subcolumns whose successful retrieval has ve at a table limit |
+| `harp2_Input_Clamped_Fraction` | `harp2_input_clamped_fraction` | % | Subcolumns whose liquid re or ve lie outside the table |
 
-Outputs are `R_UNDEF` at night, outside the HARP2 swath (swath index 7 in
-`cospIN%cospswathsIN`), and for solar zenith angles above 75 degrees.
+`clwharp2` is the fraction of subcolumns with a successful retrieval, not the liquid cloud
+cover. The histogram bins are explicit (`mod_cosp_config`): re edges 0, 4, 8, 10, 12.5, 15,
+20, 30 microns and above; ve edges 0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.125, 0.15, 0.175, 0.20,
+0.25, 0.30, 0.35, 1.0. All outputs are `R_UNDEF` at night, outside the HARP2 swath
+(`cospIN%harp2_swathIN`), and for solar zenith angles above 75 degrees; on observed
+points without any retrieval, the histogram and fractions are 0 and the mean re and ve
+are `R_UNDEF`. Hosts that time-average cloud-fraction-weighted means must use the same
+missing-value mask for numerator and denominator (see `CAM_INTEGRATION.md`, 3.5).
 
 ## Using it
 
@@ -108,27 +125,35 @@ Call `COSP_INIT` with the two optional arguments
 
 ```fortran
 call COSP_INIT(..., Lharp2=.true., harp2_lut_file='path/to/harp2_lut_670nm.txt')
+if (.not. harp2_lut_loaded()) stop 'HARP2 look-up table not loaded'   ! or the host's abort
 ```
 
-and associate any of the output fields above. In the offline driver, set the flags
-`Lclwharp2`, `Lreffclwharp2`, `Lveffclwharp2` and `Lclharp2reffveff` in the output
-namelist, and `harp2_lut_file` in the input namelist. They are off in the regression
+and associate any of the output fields above. Without the check, a missing table only
+prints an error, and COSP continues with the HARP2 outputs set to `R_UNDEF`. In the offline
+driver, set the flags `Lclwharp2`, `Lreffclwharp2`, `Lveffclwharp2`, `Lclharp2reffveff`,
+`Lharp2flagfrac`, `Lharp2vefflimfrac` and `Lharp2clampfrac` in the output namelist, and
+`harp2_lut_file` (and optionally `harp2_veffLiq`, `N_SWATHS_HARP2`, ...) in the input
+namelist. They are off in the regression
 test namelists because the known good outputs do not yet contain HARP2 fields.
 
 ## Regenerating the look-up table
 
 ```bash
-pip install miepython numba
+pip install miepython numba scipy
 MIEPYTHON_USE_JIT=1 python3 harp2_lut_generator.py -o harp2_lut_670nm.txt
 ```
 
 The defaults are those of the distributed table: 670 nm, m = 1.331 - 1.9e-8i,
 scattering angles 125 to 170 degrees every 0.25 degrees, re from 4 to 30 microns every
-0.5 microns, 13 values of ve from 0.01 to 0.25, and a size-parameter step of 0.02.
-With these settings the error in -P12 is about 0.2% of its peak from the size
-integration and at most 0.6% from linear interpolation in scattering angle. Other
-bands (e.g. 870 nm) can be produced with `--wavelength`, `--m-real` and `--m-imag`.
-Generation takes about 5 minutes.
+0.5 microns, 20 values of ve from 0.01 to 0.40 (denser above 0.1, where broad model
+distributions such as CAM6/MG2's lie), a size-parameter step of 0.02 and radii up to
+300 microns. Accuracy of -P12, as a fraction of its peak: about 0.2% from the size
+integration for the narrowest distributions and 0.1% at ve = 0.40; at most 0.6% from
+linear interpolation in scattering angle and 0.08% from interpolation between ve nodes.
+The generator computes the neglected fraction of geometric cross section outside the
+radius range analytically (incomplete gamma function) and refuses to run if it exceeds
+1e-6 (it is 2e-8 for the distributed table). Other bands (e.g. 870 nm) can be produced
+with `--wavelength`, `--m-real` and `--m-imag`. Generation takes about 11 minutes.
 
 ## Limitations and possible extensions
 
@@ -137,6 +162,9 @@ Generation takes about 5 minutes.
 * No measurement noise and no spatial aggregation: real cloudbow retrievals often
   aggregate several pixels, which also broadens ve through horizontal variability of re.
 * Ice is non-polarizing in the forward model.
+* Fixed principal-plane view geometry (no cross-track position).
+* Not yet validated against vector radiative transfer or the real HARP2 product; treat
+  the output as an idealized pseudo-retrieval.
 * Cloud optical thickness and cloud-top height are not retrieved; the MODIS and ISCCP
   simulators provide those.
 

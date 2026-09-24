@@ -219,8 +219,10 @@ MODULE MOD_COSP_STATS
           rcfg_cloudsat          ! Radar configuration information (CLOUDSAT)
      type(rttov_cfg),dimension(:),pointer :: &
           cfg_rttov              ! RTTOV configuration information (multiple instruments)
-     type(swath_inputs),dimension(7) :: & ! ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS, HARP2
+     type(swath_inputs),dimension(6) :: & ! Could be a pointer but fine
           cospswathsIN 
+     type(swath_inputs) :: &             ! HARP2 swaths. Kept separate from cospswathsIN so that
+          harp2_swathIN                  ! hosts assigning a six-element array stay valid.
   end type cosp_optical_inputs
 
 

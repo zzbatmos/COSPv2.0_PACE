@@ -314,19 +314,25 @@ MODULE MOD_COSP_CONFIG
 
     ! ####################################################################################
     ! HARP2 simulator ReffLIQ/VeffLIQ joint-histogram information
-    ! The effective radius bins are the same as for the MODIS simulator.
+    ! The effective radius bins are defined explicitly (same edges as the MODIS liquid bins
+    ! of COSP v2.2, Pincus et al. 2023) so that they do not change with the COSP version.
+    ! The effective variance bins are finer above 0.1, where broad model distributions lie.
     ! ####################################################################################
     integer,parameter :: &
-         numHARP2ReffBins = nReffLiq,                & ! Number of re bins for joint-histogram
-         numHARP2VeffBins = 8                          ! Number of ve bins for joint-histogram
+         numHARP2ReffBins = 8,                       & ! Number of re bins for joint-histogram
+         numHARP2VeffBins = 13,                      & ! Number of ve bins for joint-histogram
+         numHARP2Flags    = 5                          ! Number of retrieval outcome flags
     real(wp),parameter,dimension(numHARP2ReffBins+1) :: &
-         harp2_histReff = reffLIQ_binBounds            ! Effective radius bin boundaries (m)
-    real(wp),parameter,dimension(numHARP2ReffBins) :: &
-         harp2_histReffCenters = reffLIQ_binCenters    ! Effective radius bin centers (m)
+         harp2_histReff = (/0.0, 4.0e-6, 8e-6, 1.0e-5, 1.25e-5, 1.5e-5, 2.0e-5, 3.0e-5, 1.0e-2/) ! Effective radius bin boundaries (m)
     real(wp),parameter,dimension(2,numHARP2ReffBins) :: &
-         harp2_histReffEdges = reffLIQ_binEdges        ! Effective radius bin edges (m)
+         harp2_histReffEdges = reshape(source=(/harp2_histReff(1),((harp2_histReff(k),  &
+                                       l=1,2),k=2,numHARP2ReffBins),                     &
+                                       harp2_histReff(numHARP2ReffBins+1)/),              &
+                                       shape = (/2,numHARP2ReffBins/))
+    real(wp),parameter,dimension(numHARP2ReffBins) :: &
+         harp2_histReffCenters = (harp2_histReffEdges(1,:)+harp2_histReffEdges(2,:))/2._wp ! Effective radius bin centers (m)
     real(wp),parameter,dimension(numHARP2VeffBins+1) :: &
-         harp2_histVeff = (/0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.15, 0.20, 1.0/) ! Effective variance bin boundaries
+         harp2_histVeff = (/0.0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.125, 0.15, 0.175, 0.20, 0.25, 0.30, 0.35, 1.0/) ! Effective variance bin boundaries
     real(wp),parameter,dimension(2,numHARP2VeffBins) :: &
          harp2_histVeffEdges = reshape(source=(/harp2_histVeff(1),((harp2_histVeff(k),  &
                                        l=1,2),k=2,numHARP2VeffBins),                     &

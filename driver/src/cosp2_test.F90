@@ -54,7 +54,7 @@ program cosp2_test
                                  grLidar532_histBsct,atlid_histBsct,vgrid_zu,vgrid_zl,    & 
                                  Nlvgrid_local  => Nlvgrid,                               &
                                  vgrid_z,cloudsat_preclvl,                                &
-                                 numHARP2ReffBins,numHARP2VeffBins
+                                 numHARP2ReffBins,numHARP2VeffBins,numHARP2Flags
   use cosp_phys_constants, only: amw,amd,amO3,amCO2,amCH4,amN2O,amCO
   use mod_cosp_io,         only: nc_read_input_file,write_cosp2_output
   USE mod_quickbeam_optics,only: size_distribution,hydro_class_init,quickbeam_optics,     &
@@ -240,7 +240,10 @@ program cosp2_test
   logical :: Lclwharp2        = .false., & ! HARP2 cloudbow (liquid) cloud fraction
              Lreffclwharp2    = .false., & ! HARP2 polarimetric liquid effective radius
              Lveffclwharp2    = .false., & ! HARP2 polarimetric liquid effective variance
-             Lclharp2reffveff = .false.    ! HARP2 joint histogram of re and ve
+             Lclharp2reffveff = .false., & ! HARP2 joint histogram of re and ve
+             Lharp2flagfrac   = .false., & ! HARP2 fraction of subcolumns per retrieval outcome
+             Lharp2vefflimfrac= .false., & ! HARP2 fraction of retrievals with ve at table limit
+             Lharp2clampfrac  = .false.    ! HARP2 fraction of subcolumns with clamped inputs
   namelist/COSP_OUTPUT/Lcfaddbze94,Ldbze94,Latb532,LcfadLidarsr532,Lclcalipso,           &
                        Lclhcalipso,Lcllcalipso,Lclmcalipso,Lcltcalipso,LparasolRefl,     &
                        Lclcalipsoliq,Lclcalipsoice,Lclcalipsoun,Lclcalipsotmp,           &
@@ -267,7 +270,8 @@ program cosp2_test
                        Lptradarflag4,Lptradarflag5,Lptradarflag6,Lptradarflag7,          &
                        Lptradarflag8,Lptradarflag9,Lradarpia,                            &
                        Lwr_occfreq, Lcfodd,                                              &
-                       Lclwharp2,Lreffclwharp2,Lveffclwharp2,Lclharp2reffveff
+                       Lclwharp2,Lreffclwharp2,Lveffclwharp2,Lclharp2reffveff,           &
+                       Lharp2flagfrac,Lharp2vefflimfrac,Lharp2clampfrac
   ! Local variables
   logical :: &
        lsingle     = .true.,  & ! True if using MMF_v3_single_moment CLOUDSAT microphysical scheme (default)
@@ -332,8 +336,10 @@ program cosp2_test
        gamma_4 = (/-1., -1.,      6.0,      6.0, -1., -1.,      6.0,      6.0,      6.0/)
 
   ! Swathing DDT array
-  type(swath_inputs),dimension(7)  :: &
+  type(swath_inputs),dimension(6)  :: &
        cospswathsIN
+  type(swath_inputs) :: &
+       harp2_swathIN     ! HARP2 swaths (separate from cospswathsIN)
 
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -358,7 +364,7 @@ program cosp2_test
   rttov_instrument_namelists_final(:) = rttov_instrument_namelists(1:rttov_Ninstruments)
 
   ! Read orbital swathing inputs into structure:
-  ! Indexing order is ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS, HARP2
+  ! Indexing order is ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS
   cospswathsIN(1) % N_inst_swaths                             = N_SWATHS_ISCCP
   cospswathsIN(1) % inst_localtimes(1:N_SWATHS_ISCCP)         = SWATH_LOCALTIMES_ISCCP(1:N_SWATHS_ISCCP)
   cospswathsIN(1) % inst_localtime_widths(1:N_SWATHS_ISCCP)   = SWATH_WIDTHS_ISCCP(1:N_SWATHS_ISCCP)
@@ -377,9 +383,9 @@ program cosp2_test
   cospswathsIN(6) % N_inst_swaths                             = N_SWATHS_MODIS
   cospswathsIN(6) % inst_localtimes(1:N_SWATHS_MODIS)         = SWATH_LOCALTIMES_MODIS(1:N_SWATHS_MODIS)
   cospswathsIN(6) % inst_localtime_widths(1:N_SWATHS_MODIS)   = SWATH_WIDTHS_MODIS(1:N_SWATHS_MODIS)
-  cospswathsIN(7) % N_inst_swaths                             = N_SWATHS_HARP2
-  cospswathsIN(7) % inst_localtimes(1:N_SWATHS_HARP2)         = SWATH_LOCALTIMES_HARP2(1:N_SWATHS_HARP2)
-  cospswathsIN(7) % inst_localtime_widths(1:N_SWATHS_HARP2)   = SWATH_WIDTHS_HARP2(1:N_SWATHS_HARP2)
+  harp2_swathIN % N_inst_swaths                               = N_SWATHS_HARP2
+  harp2_swathIN % inst_localtimes(1:N_SWATHS_HARP2)           = SWATH_LOCALTIMES_HARP2(1:N_SWATHS_HARP2)
+  harp2_swathIN % inst_localtime_widths(1:N_SWATHS_HARP2)     = SWATH_WIDTHS_HARP2(1:N_SWATHS_HARP2)
      
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   ! Read in sample input data.
@@ -453,7 +459,8 @@ program cosp2_test
        Lptradarflag6 .or. Lptradarflag7 .or. Lptradarflag8 .or. Lptradarflag9 .or.       &
        Lradarpia) Lcloudsat = .true.
   if (Lparasolrefl) Lparasol = .true.
-  if (Lclwharp2 .or. Lreffclwharp2 .or. Lveffclwharp2 .or. Lclharp2reffveff) Lharp2 = .true.
+  if (Lclwharp2 .or. Lreffclwharp2 .or. Lveffclwharp2 .or. Lclharp2reffveff .or.          &
+      Lharp2flagfrac .or. Lharp2vefflimfrac .or. Lharp2clampfrac) Lharp2 = .true.
   
   if (rttov_Ninstruments .gt. 0)  Lrttov = .true.
 
@@ -521,7 +528,8 @@ program cosp2_test
        Lwr_occfreq, Lcfodd,                                                              &
        rttov_Ninstruments,rttov_configs,                                                 &
        Npoints, Ncolumns, Nlevels, Nlvgrid_local, use_vgrid, cospOUT,                    &
-       Lclwharp2, Lreffclwharp2, Lveffclwharp2, Lclharp2reffveff)
+       Lclwharp2, Lreffclwharp2, Lveffclwharp2, Lclharp2reffveff, Lharp2flagfrac,        &
+       Lharp2vefflimfrac, Lharp2clampfrac)
 
   !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   ! Break COSP up into pieces and loop over each COSP 'chunk'.
@@ -577,6 +585,7 @@ program cosp2_test
      cospIN%rcfg_cloudsat    = rcfg_cloudsat
      cospIN%cfg_rttov        => rttov_configs
      cospIN%cospswathsIN     = cospswathsIN ! Swathing information for each non-RTTOV simulator.
+     cospIN%harp2_swathIN    = harp2_swathIN
      
      cospstateIN%hgt_matrix  = zlev(start_idx:end_idx,Nlevels:1:-1) ! km
      cospstateIN%sunlit      = sunlit(start_idx:end_idx)            ! 0-1
@@ -1330,7 +1339,8 @@ contains
                                     Ninst_rttov,rttov_configs,                           &
                                     Npoints,Ncolumns,Nlevels,Nlvgrid,use_vgrid,x,        &
                                     Lclwharp2,Lreffclwharp2,Lveffclwharp2,               &
-                                    Lclharp2reffveff)
+                                    Lclharp2reffveff,Lharp2flagfrac,Lharp2vefflimfrac,   &
+                                    Lharp2clampfrac)
      ! Inputs
      logical,intent(in) :: &
          Lpctisccp,        & ! ISCCP mean cloud top pressure
@@ -1444,7 +1454,10 @@ contains
          Lclwharp2,        & ! HARP2 cloudbow (liquid) cloud fraction
          Lreffclwharp2,    & ! HARP2 polarimetric liquid effective radius
          Lveffclwharp2,    & ! HARP2 polarimetric liquid effective variance
-         Lclharp2reffveff    ! HARP2 joint histogram of re and ve
+         Lclharp2reffveff, & ! HARP2 joint histogram of re and ve
+         Lharp2flagfrac,   & ! HARP2 fraction of subcolumns per retrieval outcome
+         Lharp2vefflimfrac,& ! HARP2 fraction of retrievals with ve at the table limit
+         Lharp2clampfrac     ! HARP2 fraction of subcolumns with clamped inputs
          
      integer,intent(in) :: &
           Npoints,         & ! Number of sampled points
@@ -1621,6 +1634,9 @@ contains
     if (Lreffclwharp2)    allocate(x%harp2_Cloud_Particle_Size_Liquid_Mean(Npoints))
     if (Lveffclwharp2)    allocate(x%harp2_Effective_Variance_Liquid_Mean(Npoints))
     if (Lclharp2reffveff) allocate(x%harp2_Reff_vs_Veff_Liquid(Npoints,numHARP2ReffBins,numHARP2VeffBins))
+    if (Lharp2flagfrac)   allocate(x%harp2_Retrieval_Flag_Fraction(Npoints,numHARP2Flags))
+    if (Lharp2vefflimfrac) allocate(x%harp2_Veff_Limit_Fraction(Npoints))
+    if (Lharp2clampfrac)  allocate(x%harp2_Input_Clamped_Fraction(Npoints))
     
     ! RTTOV - Allocate output for multiple instruments
     ! Do I not need to allocate the number of instruments? Because each rttov output DDT will be a pointer?
@@ -2058,6 +2074,18 @@ contains
      if (associated(y%harp2_Reff_vs_Veff_Liquid))                            then
         deallocate(y%harp2_Reff_vs_Veff_Liquid)
         nullify(y%harp2_Reff_vs_Veff_Liquid)
+     endif
+     if (associated(y%harp2_Retrieval_Flag_Fraction))                        then
+        deallocate(y%harp2_Retrieval_Flag_Fraction)
+        nullify(y%harp2_Retrieval_Flag_Fraction)
+     endif
+     if (associated(y%harp2_Veff_Limit_Fraction))                            then
+        deallocate(y%harp2_Veff_Limit_Fraction)
+        nullify(y%harp2_Veff_Limit_Fraction)
+     endif
+     if (associated(y%harp2_Input_Clamped_Fraction))                         then
+        deallocate(y%harp2_Input_Clamped_Fraction)
+        nullify(y%harp2_Input_Clamped_Fraction)
      endif
      if (associated(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq))        then
         deallocate(y%modis_Optical_Thickness_vs_Cloud_Top_Pressure_Liq)     

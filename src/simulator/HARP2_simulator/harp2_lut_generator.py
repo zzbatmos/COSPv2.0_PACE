@@ -29,6 +29,7 @@
 #
 # History
 # Sep 2026 - Initial version, HARP2 simulator for COSP2
+# Sep 2026 - ve range extended to 0.40 (broad CAM6/MG2 distributions); tail check
 # %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 """
 Generate the look-up table (LUT) of the polarized phase function -P12(Theta; re, ve) of
@@ -41,7 +42,8 @@ Travis (1974, eq. 2.56),
 
 where re is the effective radius and ve the effective variance. Mie calculations use
 miepython (https://github.com/scottprahl/miepython). Set MIEPYTHON_USE_JIT=1 (requires
-numba) for a large speed-up.
+numba) for a large speed-up. scipy is used to check, before the Mie calculations, that the
+radius range covers every size distribution of the table (tail fraction < 1e-6).
 
 Normalization: the phase matrix is normalized so that (1/4pi) * integral(P11 dOmega) = 1,
 so that the single-scattering polarized reflectance of a layer is
@@ -72,7 +74,21 @@ import datetime
 import numpy as np
 import miepython
 
-DEFAULT_VE = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.10, 0.12, 0.15, 0.20, 0.25]
+DEFAULT_VE = [0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.10, 0.12, 0.14, 0.16, 0.18,
+              0.20, 0.22, 0.24, 0.27, 0.30, 0.35, 0.40]
+MAX_TAIL_FRACTION = 1.0e-6   # largest acceptable neglected fraction of scattering cross section
+
+
+def truncated_fraction(re, ve, r_min, r_max):
+    """Fraction of the geometric cross section outside [r_min, r_max].
+
+    The area-weighted gamma distribution r**2 n(r) is itself a gamma distribution with
+    shape 1/ve and scale re*ve, so the neglected fractions are regularized incomplete
+    gamma functions. This bounds the relative error in the scattering integrals.
+    """
+    from scipy.special import gammainc, gammaincc
+    k, scale = 1.0 / ve, re * ve
+    return gammainc(k, r_min / scale) + gammaincc(k, r_max / scale)
 
 
 def gamma_number_distribution(r, re, ve):
@@ -121,7 +137,7 @@ def build_lut(wavelength, m, theta, re_grid, ve_grid, dx, r_max):
     return ssa, qext, mp12
 
 
-def write_lut(fname, wavelength, m, theta, re_grid, ve_grid, ssa, qext, mp12, dx, r_max):
+def write_lut(fname, wavelength, m, theta, re_grid, ve_grid, ssa, qext, mp12, dx, r_max, tail):
     def block(values, per_line=8, fmt='{:.4e}'):
         values = np.ravel(values, order='F')
         return '\n'.join(' '.join(fmt.format(v) for v in values[k:k + per_line])
@@ -133,7 +149,8 @@ def write_lut(fname, wavelength, m, theta, re_grid, ve_grid, ssa, qext, mp12, dx
             datetime.date.today().isoformat(), miepython.__version__))
         f.write('# Gamma size distribution (Hansen and Travis 1974); refractive index m = {:.4f} - {:.3e}i\n'
                 .format(m.real, -m.imag))
-        f.write('# Size-parameter step dx = {}, maximum radius = {} microns\n'.format(dx, r_max))
+        f.write('# Size-parameter step dx = {}, maximum radius = {} microns, largest neglected\n'
+                '# fraction of cross section = {:.1e}\n'.format(dx, r_max, tail))
         f.write('# P11 normalized to (1/4pi) int(P11 dOmega) = 1; -P12 > 0 is perpendicular polarization\n')
         f.write('# Layout: nTheta nRe nVe / wavelength (um) / theta (deg) / re (um) / ve / ssa(re,ve) /\n')
         f.write('#         qext(re,ve) / -P12(theta,re,ve); first index varies fastest\n')
@@ -161,15 +178,28 @@ def main():
     p.add_argument('--dre', type=float, default=0.5)
     p.add_argument('--ve', type=float, nargs='+', default=DEFAULT_VE)
     p.add_argument('--dx', type=float, default=0.02, help='size-parameter step of the Mie integration')
-    p.add_argument('--r-max', type=float, default=200.0, help='largest droplet radius (microns)')
+    p.add_argument('--r-max', type=float, default=300.0, help='largest droplet radius (microns)')
     a = p.parse_args()
 
     m = complex(a.m_real, -a.m_imag)   # miepython convention: m = n - ik
     theta = np.arange(a.theta_min, a.theta_max + 0.5 * a.dtheta, a.dtheta)
     re_grid = np.arange(a.re_min, a.re_max + 0.5 * a.dre, a.dre)
     ve_grid = np.array(a.ve)
+    if np.any(np.diff(ve_grid) <= 0) or ve_grid.min() <= 0 or ve_grid.max() >= 0.5:
+        raise SystemExit('ve must be increasing and within (0, 0.5)')
+
+    # Check, before the expensive Mie calculations, that the radius range covers every
+    # size distribution of the table
+    r_min = a.dx * a.wavelength / (2.0 * np.pi)
+    tail = max(truncated_fraction(re, ve, r_min, a.r_max) for re in re_grid for ve in ve_grid)
+    print('Largest neglected fraction of cross section: {:.2e}'.format(tail))
+    if tail > MAX_TAIL_FRACTION:
+        raise SystemExit('Increase --r-max: neglected fraction {:.2e} > {:.1e}'.format(
+            tail, MAX_TAIL_FRACTION))
+
     ssa, qext, mp12 = build_lut(a.wavelength, m, theta, re_grid, ve_grid, a.dx, a.r_max)
-    write_lut(a.output, a.wavelength, m, theta, re_grid, ve_grid, ssa, qext, mp12, a.dx, a.r_max)
+    write_lut(a.output, a.wavelength, m, theta, re_grid, ve_grid, ssa, qext, mp12, a.dx, a.r_max,
+              tail)
     print('Wrote {} ({} x {} x {})'.format(a.output, theta.size, re_grid.size, ve_grid.size))
 
 

@@ -28,6 +28,7 @@
 !
 ! History
 ! Sep 2026: Initial version of the HARP2 (PACE) polarimetric cloudbow simulator
+! Sep 2026: Diagnostics of retrieval outcomes, input clamping and variance at table limits
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 !
 ! Notes on using the HARP2 simulator:
@@ -69,7 +70,7 @@
 !     Space Sci. Rev., 16, 527-610.
 !
 module mod_harp2_sim
-  USE MOD_COSP_CONFIG, only: R_UNDEF,numHARP2ReffBins,numHARP2VeffBins,                 &
+  USE MOD_COSP_CONFIG, only: R_UNDEF,numHARP2ReffBins,numHARP2VeffBins,numHARP2Flags,   &
                              harp2_histReff,harp2_histVeff
   USE COSP_KINDS,      ONLY: wp
   USE COSP_MATH_CONSTANTS, ONLY: pi
@@ -87,6 +88,9 @@ module mod_harp2_sim
                                         ! detect the cloudbow
        fit_QualityMin,                & ! Minimum fraction of the non-smooth signal explained
                                         ! by the cloudbow term
+       inputClamp_WeightMin,          & ! A subcolumn is flagged as clamped when layers with
+                                        ! (re, ve) outside the table carry at least this
+                                        ! fraction of the liquid polarized signal
        rayleigh_OpticalDepth,         & ! Column Rayleigh optical depth at 1013.25 hPa
        rayleigh_Depolarization          ! Rayleigh depolarization factor (1-rho)/(1+rho/2)
   integer :: &
@@ -102,6 +106,7 @@ module mod_harp2_sim
        harp2_flagGeometry    = 3,     & ! Cloudy, but the cloudbow window is not sampled
        harp2_flagFitFailed   = 4        ! Cloudbow detected, but the fit failed (poor fit
                                         ! or radius at the edge of the look-up table)
+  ! numHARP2Flags (mod_cosp_config) must equal the number of flags above
 
   ! Polarized phase function look-up table (loaded by cosp_harp2_init)
   integer :: &
@@ -127,7 +132,8 @@ contains
   subroutine harp2_subcolumn(nSubCols, nLevels, nAngles, mu0, muView, scatAngle,         &
                              pressureLevels, optical_thickness, tauLiquidFraction,        &
                              reffLiq, veffLiq, retrievedFlag, retrievedSize,              &
-                             retrievedVariance, polarizedReflectance)
+                             retrievedVariance, inputClamped, veffAtLimit,                &
+                             polarizedReflectance)
     ! INPUTS
     integer,intent(in) :: &
          nSubCols,                  & ! Number of subcolumns
@@ -152,6 +158,10 @@ contains
     real(wp),dimension(nSubCols), intent(out) :: &
          retrievedSize,             & ! Retrieved effective radius (meters)
          retrievedVariance            ! Retrieved effective variance
+    logical, dimension(nSubCols), intent(out) :: &
+         inputClamped,              & ! Liquid (re, ve) outside the table carry at least
+                                      ! inputClamp_WeightMin of the polarized signal
+         veffAtLimit                  ! Successful retrieval with ve at a table limit
     real(wp),dimension(nSubCols,nAngles),intent(out),optional :: &
          polarizedReflectance         ! Simulated polarized reflectance (R_UNDEF outside
                                       ! the cloudbow window)
@@ -167,10 +177,13 @@ contains
          FtilNorm2
     real(wp),dimension(nLevels) :: &
          tauLiq, tauIce, tauRay
+    real(wp) :: clampedWeight
 
     retrievedFlag(1:nSubCols)     = harp2_flagClear
     retrievedSize(1:nSubCols)     = R_UNDEF
     retrievedVariance(1:nSubCols) = R_UNDEF
+    inputClamped(1:nSubCols)      = .false.
+    veffAtLimit(1:nSubCols)       = .false.
     if (present(polarizedReflectance)) polarizedReflectance(1:nSubCols,1:nAngles) = R_UNDEF
 
     ! ######################################################################################
@@ -226,14 +239,21 @@ contains
        tauLiq(1:nLevels) = optical_thickness(i,1:nLevels)*tauLiquidFraction(i,1:nLevels)
        tauIce(1:nLevels) = optical_thickness(i,1:nLevels) - tauLiq(1:nLevels)
        call single_scattering_polarized_reflectance(nLevels, nWin, tauLiq, tauIce, tauRay, &
-            reffLiq(i,1:nLevels), veffLiq(i,1:nLevels), airMass, geoNorm, mP12Ray, F, Rp)
+            reffLiq(i,1:nLevels), veffLiq(i,1:nLevels), airMass, geoNorm, mP12Ray, F, Rp,   &
+            clampedWeight)
+       inputClamped(i) = clampedWeight >= inputClamp_WeightMin
        if (present(polarizedReflectance)) polarizedReflectance(i,iWin(1:nWin)) = Rp(1:nWin)
 
        ! Retrieval: fit the geometry-normalized signal
        z(1:nWin) = geoNorm(1:nWin)*Rp(1:nWin)
        call cloudbow_retrieval(nWin, z, basis1, basis2, Ftil, FtilNorm2,                 &
                                retrievedFlag(i), retrievedSize(i), retrievedVariance(i))
-       if (retrievedFlag(i) == harp2_flagCloudbow) retrievedSize(i) = 1.0e-06_wp*retrievedSize(i)
+       if (retrievedFlag(i) == harp2_flagCloudbow) then
+          retrievedSize(i) = 1.0e-06_wp*retrievedSize(i)
+          ! The minimum is on (or pushed onto) the first or last ve node
+          veffAtLimit(i) = retrievedVariance(i) <= LUT_ve(1) .or.                          &
+                           retrievedVariance(i) >= LUT_ve(nLUT_ve)
+       endif
     enddo
 
     deallocate(airMass, geoNorm, mP12Ray, basis1, basis2, Rp, z, F, Ftil)
@@ -244,8 +264,11 @@ contains
   ! Grid-box statistics
   ! ########################################################################################
   subroutine harp2_column(nPoints, nSubCols, flag, particle_size, size_variance,         &
+                          inputClamped, veffAtLimit,                                      &
                           Cloud_Fraction_Liquid_Mean, Cloud_Particle_Size_Liquid_Mean,    &
-                          Effective_Variance_Liquid_Mean, Reff_vs_Veff_Liquid)
+                          Effective_Variance_Liquid_Mean, Reff_vs_Veff_Liquid,            &
+                          Retrieval_Flag_Fraction, Veff_Limit_Fraction,                   &
+                          Input_Clamped_Fraction)
     ! INPUTS
     integer,intent(in) :: &
          nPoints,                           & ! Number of horizontal gridpoints
@@ -255,6 +278,9 @@ contains
     real(wp),intent(in),dimension(nPoints, nSubCols) ::  &
          particle_size,                     & ! Retrieved effective radius (m)
          size_variance                        ! Retrieved effective variance
+    logical, intent(in),dimension(nPoints, nSubCols) ::  &
+         inputClamped,                      & ! Inputs clamped to the table (see harp2_subcolumn)
+         veffAtLimit                          ! Retrieved ve at a table limit
     ! OUTPUTS
     real(wp),intent(inout),dimension(nPoints) :: &
          Cloud_Fraction_Liquid_Mean,        & ! Fraction of subcolumns with cloudbow retrieval (%)
@@ -262,6 +288,12 @@ contains
          Effective_Variance_Liquid_Mean       ! Mean retrieved effective variance
     real(wp),intent(inout),dimension(nPoints,numHARP2ReffBins,numHARP2VeffBins) :: &
          Reff_vs_Veff_Liquid                  ! Joint histogram of re and ve (%)
+    real(wp),intent(inout),dimension(nPoints,numHARP2Flags) :: &
+         Retrieval_Flag_Fraction              ! Fraction of subcolumns per outcome flag
+                                              ! (flag value = index - 1) (%)
+    real(wp),intent(inout),dimension(nPoints) :: &
+         Veff_Limit_Fraction,               & ! Successful retrievals with ve at a table limit (%)
+         Input_Clamped_Fraction               ! Subcolumns with clamped inputs (%)
     ! LOCAL VARIABLES
     integer :: j
     logical, dimension(nPoints,nSubCols) :: validMask
@@ -292,6 +324,15 @@ contains
     Reff_vs_Veff_Liquid(1:nPoints,1:numHARP2ReffBins,1:numHARP2VeffBins) = 100._wp *      &
          Reff_vs_Veff_Liquid(1:nPoints,1:numHARP2ReffBins,1:numHARP2VeffBins)/nSubCols
 
+    ! Diagnostics: all outcomes (they sum to 100%), variance saturation, input clamping
+    do j = 1, numHARP2Flags
+       Retrieval_Flag_Fraction(1:nPoints,j) = 100._wp*real(count(flag(1:nPoints,1:nSubCols)  &
+            == j-1, dim = 2), wp)/nSubCols
+    enddo
+    Veff_Limit_Fraction(1:nPoints)    = 100._wp*real(count(validMask .and. veffAtLimit,    &
+         dim = 2), wp)/nSubCols
+    Input_Clamped_Fraction(1:nPoints) = 100._wp*real(count(inputClamped, dim = 2), wp)/nSubCols
+
   end subroutine harp2_column
 
   ! ########################################################################################
@@ -313,7 +354,7 @@ contains
   ! Single-scattering polarized reflectance of a layered column (black surface)
   ! ########################################################################################
   subroutine single_scattering_polarized_reflectance(nLevels, nWin, tauLiq, tauIce,      &
-       tauRay, reff, veff, airMass, geoNorm, mP12Ray, F, Rp)
+       tauRay, reff, veff, airMass, geoNorm, mP12Ray, F, Rp, clampedWeight)
     ! INPUTS
     integer,intent(in) :: nLevels, nWin
     real(wp),intent(in),dimension(nLevels) :: tauLiq, tauIce, tauRay, reff, veff
@@ -321,13 +362,20 @@ contains
     real(wp),intent(in),dimension(nWin,nLUT_re,nLUT_ve) :: F
     ! OUTPUTS
     real(wp),intent(out),dimension(nWin) :: Rp
+    real(wp),intent(out) :: clampedWeight ! Fraction of the liquid signal (first window angle)
+                                          ! from layers whose (re, ve) are outside the table
     ! LOCAL VARIABLES
     integer :: k, ir, iv
-    real(wp) :: dtau, tauAbove, wr, wv, ssa
+    real(wp) :: dtau, tauAbove, wr, wv, ssa, liqWeight, clampWeight
     real(wp),dimension(nWin) :: source, mP12Liq, layerFactor
+    logical,dimension(nLevels) :: clamped
 
     Rp(1:nWin) = 0._wp
     tauAbove   = 0._wp
+    liqWeight  = 0._wp
+    clampWeight = 0._wp
+    clamped(1:nLevels) = reff(1:nLevels) < LUT_re(1) .or. reff(1:nLevels) > LUT_re(nLUT_re) .or. &
+                         veff(1:nLevels) < LUT_ve(1) .or. veff(1:nLevels) > LUT_ve(nLUT_ve)
     do k = 1, nLevels
        dtau = tauLiq(k) + tauIce(k) + tauRay(k)
        if (dtau <= 0._wp) cycle
@@ -352,12 +400,18 @@ contains
           layerFactor(1:nWin) = exp(-tauAbove*airMass(1:nWin))*airMass(1:nWin)
        endwhere
        Rp(1:nWin) = Rp(1:nWin) + source(1:nWin)*layerFactor(1:nWin)
+       if (tauLiq(k) > 0._wp) then
+          liqWeight = liqWeight + tauLiq(k)*layerFactor(1)
+          if (clamped(k)) clampWeight = clampWeight + tauLiq(k)*layerFactor(1)
+       endif
 
        tauAbove = tauAbove + dtau
        ! Deeper layers do not contribute (airMass >= 2)
        if (tauAbove > 20._wp) exit
     enddo
     Rp(1:nWin) = Rp(1:nWin)/geoNorm(1:nWin)
+    clampedWeight = 0._wp
+    if (liqWeight > 0._wp) clampedWeight = clampWeight/liqWeight
 
   end subroutine single_scattering_polarized_reflectance
 

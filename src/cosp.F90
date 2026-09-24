@@ -52,7 +52,7 @@ MODULE MOD_COSP
                                          modis_histTauEdges,tau_binEdges,nCloudsatPrecipClass,&
                                          modis_histTauCenters,tau_binCenters,            &
                                          cloudsat_preclvl,grLidar532_histBsct,atlid_histBsct,&
-                                         numHARP2ReffBins,numHARP2VeffBins
+                                         numHARP2ReffBins,numHARP2VeffBins,numHARP2Flags
   USE MOD_COSP_MODIS_INTERFACE,      ONLY: cosp_modis_init,       modis_IN, &
                                            COSP_ASSIGN_modisIN
   USE MOD_COSP_HARP2_INTERFACE,      ONLY: cosp_harp2_init,       harp2_IN, &
@@ -221,6 +221,11 @@ MODULE MOD_COSP
           harp2_Effective_Variance_Liquid_Mean => null()     ! Polarimetric liquid effective variance
      real(wp),pointer,dimension(:,:,:) :: &
           harp2_Reff_vs_Veff_Liquid => null()                ! ReffLIQ/VeffLIQ joint histogram
+     real(wp),pointer,dimension(:,:) :: &
+          harp2_Retrieval_Flag_Fraction => null()            ! Fraction of subcolumns per outcome
+     real(wp),pointer,dimension(:) :: &
+          harp2_Veff_Limit_Fraction => null(),             & ! Retrievals with ve at a table limit
+          harp2_Input_Clamped_Fraction => null()             ! Subcolumns with clamped inputs
 
      ! Joint CloudSat+MODIS simulators outputs
      real(wp),dimension(:,:,:,:),pointer :: &
@@ -404,6 +409,9 @@ CONTAINS
     ! HARP2 variables
     integer,dimension(:,:),allocatable :: &
         harp2RetrievedFlag
+    logical,dimension(:,:),allocatable :: &
+        harp2InputClamped,             &
+        harp2VeffAtLimit
     real(wp),dimension(:,:),allocatable :: &
         harp2RetrievedSize,            &
         harp2RetrievedVariance
@@ -412,7 +420,11 @@ CONTAINS
     real(wp),dimension(:),allocatable :: &
         harp2CfLiquid,                 &
         harp2MeanSizeLiquid,           &
-        harp2MeanVarianceLiquid
+        harp2MeanVarianceLiquid,       &
+        harp2VeffLimitFraction,        &
+        harp2InputClampedFraction
+    real(wp),dimension(:,:),allocatable :: &
+        harp2FlagFraction
     real(wp) :: &
         harp2Mu0
     real(wp),dimension(HARP2_NVIEW) :: &
@@ -620,7 +632,10 @@ CONTAINS
     if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean)               .or.          &
         associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean)          .or.          &
         associated(cospOUT%harp2_Effective_Variance_Liquid_Mean)           .or.          &
-        associated(cospOUT%harp2_Reff_vs_Veff_Liquid)) then
+        associated(cospOUT%harp2_Reff_vs_Veff_Liquid)                      .or.          &
+        associated(cospOUT%harp2_Retrieval_Flag_Fraction)                  .or.          &
+        associated(cospOUT%harp2_Veff_Limit_Fraction)                      .or.          &
+        associated(cospOUT%harp2_Input_Clamped_Fraction)) then
        Lharp2_column    = .true.
        Lharp2_subcolumn = .true.
     endif
@@ -665,7 +680,7 @@ CONTAINS
     ! 3) Populate instrument simulator inputs
     !%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
-    ! Indexing order for "cospIN % cospswathsIN" is ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS, HARP2
+    ! Indexing order for "cospIN % cospswathsIN" is ISCCP, MISR, CLOUDSAT-CALIPSO, ATLID, PARASOL, MODIS
     if (Lisccp_subcolumn .or. Lmodis_subcolumn) then
        call COSP_ASSIGN_isccpIN(cospIN,cospgridIN,Npoints,isccpIN,ISCCP_MASK_INDICES) !COSP_ASSIGN_isccpIN
     endif
@@ -997,7 +1012,9 @@ CONTAINS
        if (harp2IN%nSunlit > 0) then
           allocate(harp2RetrievedFlag(harp2IN%nSunlit,harp2IN%nColumns),                 &
                    harp2RetrievedSize(harp2IN%nSunlit,harp2IN%nColumns),                 &
-                   harp2RetrievedVariance(harp2IN%nSunlit,harp2IN%nColumns))
+                   harp2RetrievedVariance(harp2IN%nSunlit,harp2IN%nColumns),             &
+                   harp2InputClamped(harp2IN%nSunlit,harp2IN%nColumns),                  &
+                   harp2VeffAtLimit(harp2IN%nSunlit,harp2IN%nColumns))
           ! Call simulator one column at a time on sunlit columns
           do i = 1, harp2IN%nSunlit
              call harp2_view_geometry(harp2IN%sza(harp2IN%sunlit(i)), harp2Mu0,           &
@@ -1010,7 +1027,8 @@ CONTAINS
                                   harp2IN%reffLiq(harp2IN%sunlit(i),:,:),                 &
                                   harp2IN%veffLiq(harp2IN%sunlit(i),:,:),                 &
                                   harp2RetrievedFlag(i,:), harp2RetrievedSize(i,:),       &
-                                  harp2RetrievedVariance(i,:))
+                                  harp2RetrievedVariance(i,:), harp2InputClamped(i,:),    &
+                                  harp2VeffAtLimit(i,:))
           end do
        endif
     endif
@@ -1897,11 +1915,16 @@ CONTAINS
        if (harp2IN%nSunlit > 0) then
           allocate(harp2CfLiquid(harp2IN%nSunlit), harp2MeanSizeLiquid(harp2IN%nSunlit),   &
                    harp2MeanVarianceLiquid(harp2IN%nSunlit),                             &
-                   harp2JointHistogram(harp2IN%nSunlit,numHARP2ReffBins,numHARP2VeffBins))
+                   harp2JointHistogram(harp2IN%nSunlit,numHARP2ReffBins,numHARP2VeffBins),&
+                   harp2FlagFraction(harp2IN%nSunlit,numHARP2Flags),                     &
+                   harp2VeffLimitFraction(harp2IN%nSunlit),                              &
+                   harp2InputClampedFraction(harp2IN%nSunlit))
           call harp2_column(harp2IN%nSunlit, harp2IN%Ncolumns, harp2RetrievedFlag,        &
-                            harp2RetrievedSize, harp2RetrievedVariance, harp2CfLiquid,    &
+                            harp2RetrievedSize, harp2RetrievedVariance,                   &
+                            harp2InputClamped, harp2VeffAtLimit, harp2CfLiquid,           &
                             harp2MeanSizeLiquid, harp2MeanVarianceLiquid,                 &
-                            harp2JointHistogram)
+                            harp2JointHistogram, harp2FlagFraction,                       &
+                            harp2VeffLimitFraction, harp2InputClampedFraction)
           if (associated(cospOUT%harp2_Cloud_Fraction_Liquid_Mean))                      &
              cospOUT%harp2_Cloud_Fraction_Liquid_Mean(ij+harp2IN%sunlit(:)-1) = harp2CfLiquid
           if (associated(cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean))                 &
@@ -1912,6 +1935,13 @@ CONTAINS
                   harp2MeanVarianceLiquid
           if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                             &
              cospOUT%harp2_Reff_vs_Veff_Liquid(ij+harp2IN%sunlit(:)-1,:,:) = harp2JointHistogram
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                         &
+             cospOUT%harp2_Retrieval_Flag_Fraction(ij+harp2IN%sunlit(:)-1,:) = harp2FlagFraction
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                             &
+             cospOUT%harp2_Veff_Limit_Fraction(ij+harp2IN%sunlit(:)-1) = harp2VeffLimitFraction
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                          &
+             cospOUT%harp2_Input_Clamped_Fraction(ij+harp2IN%sunlit(:)-1) =              &
+                  harp2InputClampedFraction
        endif
        ! Where it's night (or not observed) the retrievals are undefined
        if (harp2IN%nSunlit < harp2IN%Npoints) then
@@ -1923,6 +1953,12 @@ CONTAINS
              cospOUT%harp2_Effective_Variance_Liquid_Mean(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
           if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                             &
              cospOUT%harp2_Reff_vs_Veff_Liquid(ij+harp2IN%notSunlit(:)-1,:,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                         &
+             cospOUT%harp2_Retrieval_Flag_Fraction(ij+harp2IN%notSunlit(:)-1,:) = R_UNDEF
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                             &
+             cospOUT%harp2_Veff_Limit_Fraction(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                          &
+             cospOUT%harp2_Input_Clamped_Fraction(ij+harp2IN%notSunlit(:)-1) = R_UNDEF
        endif
        ! Free up memory (if necessary)
        if (allocated(harp2RetrievedFlag))      deallocate(harp2RetrievedFlag)
@@ -1932,6 +1968,11 @@ CONTAINS
        if (allocated(harp2MeanSizeLiquid))     deallocate(harp2MeanSizeLiquid)
        if (allocated(harp2MeanVarianceLiquid)) deallocate(harp2MeanVarianceLiquid)
        if (allocated(harp2JointHistogram))     deallocate(harp2JointHistogram)
+       if (allocated(harp2FlagFraction))       deallocate(harp2FlagFraction)
+       if (allocated(harp2VeffLimitFraction))  deallocate(harp2VeffLimitFraction)
+       if (allocated(harp2InputClampedFraction)) deallocate(harp2InputClampedFraction)
+       if (allocated(harp2InputClamped))       deallocate(harp2InputClamped)
+       if (allocated(harp2VeffAtLimit))        deallocate(harp2VeffAtLimit)
     endif
 
     ! RTTOV multi-instrument
@@ -2358,6 +2399,8 @@ CONTAINS
        if (allocated(harp2RetrievedFlag))     deallocate(harp2RetrievedFlag)
        if (allocated(harp2RetrievedSize))     deallocate(harp2RetrievedSize)
        if (allocated(harp2RetrievedVariance)) deallocate(harp2RetrievedVariance)
+       if (allocated(harp2InputClamped))      deallocate(harp2InputClamped)
+       if (allocated(harp2VeffAtLimit))       deallocate(harp2VeffAtLimit)
     endif
     
     if (Lrttov_column) then
@@ -3188,6 +3231,12 @@ CONTAINS
                cospOUT%harp2_Effective_Variance_Liquid_Mean(:)  = R_UNDEF
           if (associated(cospOUT%harp2_Reff_vs_Veff_Liquid))                                &
                cospOUT%harp2_Reff_vs_Veff_Liquid(:,:,:)         = R_UNDEF
+          if (associated(cospOUT%harp2_Retrieval_Flag_Fraction))                            &
+               cospOUT%harp2_Retrieval_Flag_Fraction(:,:)       = R_UNDEF
+          if (associated(cospOUT%harp2_Veff_Limit_Fraction))                                &
+               cospOUT%harp2_Veff_Limit_Fraction(:)             = R_UNDEF
+          if (associated(cospOUT%harp2_Input_Clamped_Fraction))                             &
+               cospOUT%harp2_Input_Clamped_Fraction(:)          = R_UNDEF
        endif
     endif
     

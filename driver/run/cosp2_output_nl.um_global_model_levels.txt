@@ -150,6 +150,9 @@
   Lreffclwharp2=.false.,
   Lveffclwharp2=.false.,
   Lclharp2reffveff=.false.,
+  Lharp2flagfrac=.false.,
+  Lharp2vefflimfrac=.false.,
+  Lharp2clampfrac=.false.,
   !- CloudSat+MODIS joint diagnostics
   Lwr_occfreq=.true.,
   Lcfodd=.true.

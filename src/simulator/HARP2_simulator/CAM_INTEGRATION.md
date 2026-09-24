@@ -4,16 +4,26 @@ Audience: an agent (or developer) working in a CESM/CAM checkout that wants to a
 HARP2 simulator from this repository. Read section 2 first: the right integration path
 depends on which COSP version your CAM uses, and the two paths are not interchangeable.
 
+Revision 2 (after an independent review from a CESM2.1 installation). Changes from
+revision 1: corrected history-averaging recipe (3.5), corrected MG2 `MU` facts (3.2),
+the ve range of the LUT extended to 0.40 with saturation diagnostics, HARP2 swath input
+made non-breaking (no CAM change needed for it any more), explicit histogram bins,
+`harp2_lut_loaded()`, new outcome diagnostics, validation wording (6).
+
 All facts below were checked against these commits (line numbers refer to them; `grep`
 in your own checkout before editing, since line numbers drift):
 
 | Code | Branch / tag | Commit |
 |---|---|---|
 | HARP2 COSP branch | `zzbatmos/COSPv2.0_PACE`, branch `claude/great-lovelace-wsm2hk` | base `5eb05e5` (= CFMIP COSP `v2.2.1`) + HARP2 commits |
-| CAM for CESM2.1 | `ESCOMP/CAM` `cam_cesm2_1_rel` (latest tag `cam_cesm2_1_rel_60`) | `405a3f2` |
-| CAM for CESM2.2 | `ESCOMP/CAM` `cam_cesm2_2_rel` (latest tag `cam_cesm2_2_rel_09`) | `c47c4d7` |
+| CAM for CESM2.1 | `ESCOMP/CAM` `cam_cesm2_1_rel` (branch head) | `405a3f2` |
+| CAM for CESM2.2 | `ESCOMP/CAM` `cam_cesm2_2_rel` | `c47c4d7` |
 | CAM development | `ESCOMP/CAM` `cam_development` | `e9e28e4` (2026-09-18) |
 | COSP used by CESM2.1/2.2 | `CFMIP/COSPv2.0` tag `v2.1.4cesm` | `34d8eef` (2019-10-15) |
+
+The reviewed installation runs `cam_cesm2_1_rel_60` (commit `a03b84b`) with COSP
+`v2.1.4cesm`; its line numbers can differ by a few lines from `405a3f2` (e.g. the `MU`
+reset is at line 2551 there and 2553 here).
 
 ## 1. What the HARP2 branch provides
 
@@ -23,24 +33,42 @@ in your own checkout before editing, since line numbers drift):
   degrees. See `README.md` in the same directory for the method.
 * Interface: `src/simulator/cosp_harp2_interface.F90` (module `mod_cosp_harp2_interface`):
   parameters, LUT reader, viewing geometry, `COSP_ASSIGN_harp2IN` (daylight and swath
-  masks).
-* Look-up table: `src/simulator/HARP2_simulator/harp2_lut_670nm.txt` (1.4 MB text,
-  generated with miepython by `harp2_lut_generator.py`).
+  masks), and `harp2_lut_loaded()`.
+* Look-up table: `src/simulator/HARP2_simulator/harp2_lut_670nm.txt` (text, generated with
+  miepython by `harp2_lut_generator.py`): 181 scattering angles (125 to 170 degrees),
+  53 radii (4 to 30 microns), **20 variances (0.01 to 0.40)**. Numerical accuracy (section
+  3.2) was checked at the new broad end.
 * New COSP inputs (in `cosp_optical_inputs`, v2.2.1 layout):
   `cospIN%reffLiq(npoints,ncolumns,nlevels)` liquid effective radius in **microns**,
   `cospIN%veffLiq(npoints,ncolumns,nlevels)` liquid effective variance.
   Also used: `cospIN%tau_067`, `cospIN%fracLiq`, `cospgridIN%phalf`, `cospgridIN%sunlit`,
   `cospgridIN%sza` (degrees; defaults to 30 if not allocated).
-* New `cosp_outputs` pointers: `harp2_Cloud_Fraction_Liquid_Mean` (%),
-  `harp2_Cloud_Particle_Size_Liquid_Mean` (m), `harp2_Effective_Variance_Liquid_Mean` (1),
-  `harp2_Reff_vs_Veff_Liquid(npoints,numHARP2ReffBins,numHARP2VeffBins)` (%).
+* HARP2 orbit swaths come from a **separate** component, `cospIN%harp2_swathIN`
+  (`type(swath_inputs)`, off by default). `cospIN%cospswathsIN` keeps its original
+  `dimension(6)`, so v2.2 hosts that copy a six-element array compile unchanged.
+* New `cosp_outputs` pointers (all `R_UNDEF` where HARP2 does not observe: night,
+  SZA > 75 degrees, outside the HARP2 swath):
+
+  | Pointer | Units | Content |
+  |---|---|---|
+  | `harp2_Cloud_Fraction_Liquid_Mean` | % | fraction of subcolumns with a successful cloudbow retrieval (**not** liquid cloud cover) |
+  | `harp2_Cloud_Particle_Size_Liquid_Mean` | m | mean retrieved re over successful retrievals (`R_UNDEF` if none) |
+  | `harp2_Effective_Variance_Liquid_Mean` | 1 | mean retrieved ve over successful retrievals (`R_UNDEF` if none) |
+  | `harp2_Reff_vs_Veff_Liquid(npoints,numHARP2ReffBins,numHARP2VeffBins)` | % | joint re-ve histogram; sums to the retrieval fraction |
+  | `harp2_Retrieval_Flag_Fraction(npoints,numHARP2Flags)` | % | fraction of subcolumns per outcome, index = flag + 1: 0 clear (tau < 0.3), 1 retrieval, 2 no cloudbow, 3 cloudbow not sampled by the geometry, 4 fit failed; sums to 100 |
+  | `harp2_Veff_Limit_Fraction` | % | subcolumns whose successful retrieval has ve on a table limit (0.01 or 0.40) |
+  | `harp2_Input_Clamped_Fraction` | % | subcolumns where liquid layers with (re, ve) outside the table carry at least 1% of the polarized signal |
+
+* Histogram bins (in `mod_cosp_config`, explicit, identical in any COSP version):
+  re edges 0, 4, 8, 10, 12.5, 15, 20, 30, 10^4 microns (8 bins, the COSP v2.2 MODIS liquid
+  edges, stored in meters); ve edges 0, 0.02, 0.04, 0.06, 0.08, 0.10, 0.125, 0.15, 0.175,
+  0.20, 0.25, 0.30, 0.35, 1.0 (13 bins; the last bin holds ve at the 0.40 limit).
 * `COSP_INIT` gained two trailing optional arguments: `Lharp2`, `harp2_lut_file`.
   Existing positional calls are unaffected.
-* Swath array `cospIN%cospswathsIN` was enlarged from `dimension(6)` to `dimension(7)`
-  (index 7 = HARP2). **This breaks hosts that copy a size-6 array into it (see 4.2).**
-* Tested only in the COSP offline driver: unit tests pass; with HARP2 off or on, every
-  pre-existing output is bit-identical to COSP `v2.2.1` (also with chunking, model
-  levels and swathing). Not yet built or run inside CAM.
+* Tested only in the COSP offline driver (unit tests pass; with HARP2 off or on, every
+  pre-existing output is bit-identical to COSP `v2.2.1`, also with chunking, model levels
+  and swathing). The reviewer also ran the unit tests with CAM's double-precision
+  `cosp_kinds`. Not yet built or run inside CAM.
 
 ## 2. Step 1: find out which COSP your CAM uses
 
@@ -104,33 +132,54 @@ comes from `REL` (stratiform, pbuf) and `CV_REFFLIQ` (convective) through
 cospIN%reffLiq = MODIS_waterSize*1.0e6_wp   ! microns
 ```
 
-`cospIN%fracLiq` is computed by `modis_optics` only inside `if (lmodis_sim)`. Either
-require `cosp_lmodis_sim=.true.` whenever HARP2 is on, or widen that condition.
+`cospIN%fracLiq` is computed by `modis_optics` only inside `if (lmodis_sim)`. For the
+first integration, **require `cosp_lmodis_sim=.true.` whenever HARP2 is on**.
 
-### 3.2 Effective variance from the microphysics (recommended over a constant)
+### 3.2 Effective variance from the microphysics
 
 MG2/PUMAS use a gamma droplet size distribution `n(D) ~ D^mu exp(-lambda D)` and store
 `mu` and `lambda` in the physics buffer as `'MU'` and `'LAMBDAC'` (grid-box, stratiform
-liquid, `(pcols,pver)`). CAM computes `rel = (mu+3)/(2*lambdac)` from them
-(release `micro_mg_cam.F90` line 2528; development `micro_pumas_cam.F90` lines 2946 and
-2971), which confirms that for this distribution
+liquid, `(pcols,pver)`). Where there is prognosed cloud water, CAM computes
+`rel = (mu+3)/(2*lambdac)` (release `micro_mg_cam.F90` line 2547; development
+`micro_pumas_cam.F90` lines 2946 and 2971). For this distribution
 
 ```
 ve = 1/(mu + 3)
 ```
 
-Important details (verified in CESM2.1 `micro_mg_utils.F90`, `size_dist_param_liq`;
-for `cam_development` verify the same in the PUMAS submodule under
+What `MU` actually contains in CESM2.1 `micro_mg_cam.F90` (verified in `405a3f2`; for
+`cam_development` verify the same in `micro_pumas_cam.F90` and the PUMAS submodule under
 `src/physics/pumas-frozen`, which was not inspected):
 
-* `mu` follows Martin et al. (1994) with a floor: `pgam = 1/(1-0.7 exp(-0.008 Nc))^2 - 1`,
-  `pgam = max(pgam, 2)`, with `Nc` the in-cloud droplet number in cm^-3. So **ve <= 0.2**,
-  and ve = 0.2 whenever Nc > about 63 cm^-3 (most clouds).
-* Where there is no liquid, `mu` is set to `-100` (sentinel), and above `top_lev` it stays
-  0. Only `mu >= 2` is valid. Guard it:
-  `where (mu >= 2._r8) ve_ls = 1._r8/(mu+3._r8) elsewhere ve_ls = ve_default`.
-* Convective liquid (`frac_out == 2`) has no `mu`: use a namelist constant
-  (suggested name `cosp_harp2_veff_conv`).
+1. `size_dist_param_liq` (`micro_mg_utils.F90`) gives the Martin et al. (1994) value with a
+   floor: `pgam = 1/(1-0.7 exp(-0.008 Nc))^2 - 1`, `pgam = max(pgam, 2)`, `Nc` the
+   in-cloud droplet number in cm^-3. So prognosed ve <= 0.2, and ve = 0.2 whenever
+   Nc > about 63 cm^-3. Where in-cloud water is below `qsmall` it returns the sentinel
+   -100.
+2. The sentinel is then **reset to 0** (`micro_mg_cam.F90` line 2553, `elsewhere` branch).
+   So in the pbuf, `MU = 0` means no stratiform cloud water.
+3. Where the stratiform cloud fraction `ast < 1e-4`, `MU` is overwritten with the
+   convective value `mucon = 5.3` (line 2641; `LAMBDAC` too), i.e. **ve = 1/8.3 = 0.1205**.
+   `REL` is **not** changed by this fallback, so in those cells `REL` and `MU` are not a
+   consistent pair. `MU >= 2` therefore does not identify prognosed microphysics.
+
+Recommended mapping (stratiform liquid):
+
+```fortran
+! mu, ast: pbuf 'MU' and 'AST', sliced like the other COSP inputs
+where (mu > 0._r8)              ! prognosed (>= 2) or fallback (5.3)
+   ve_ls = 1._r8/(mu + 3._r8)
+elsewhere                       ! MU = 0: no stratiform cloud water
+   ve_ls = cosp_harp2_veff_default
+end where
+! Optional: treat the low-cloud-fraction fallback like the no-cloud case
+! where (ast < 1.e-4_r8) ve_ls = cosp_harp2_veff_default
+```
+
+Other points:
+
+* Convective liquid (`frac_out == 2`) has no `mu`: keep its ve separately configurable
+  (suggested namelist `cosp_harp2_veff_conv`).
 * If microphysics runs on subcolumns (`use_subcol_microp`), `'MU'` is registered on
   subcolumns; the default CAM6 configuration does not do this.
 * Slice `mu` exactly like the other COSP inputs: `(1:ncol,1:pver)` in the release,
@@ -144,57 +193,106 @@ call cosp_simulator_optics(nPoints, nColumns, nLevels, cospIN%frac_out, &
                            ve_conv, ve_ls, cospIN%veffLiq)   ! ve_conv, ve_ls: (nPoints,nLevels)
 ```
 
-Scientific consequence: with ve near 0.2 in the model, retrieved ve will be near or
-above 0.2 (vertical variation of re near cloud top broadens it further). The shipped LUT
-stops at **ve = 0.25**, so retrievals may pile up at the edge. Regenerate the LUT with a
-wider ve range before production runs (the gamma distribution is valid for ve < 0.5):
-
-```bash
-pip install miepython numba
-MIEPYTHON_USE_JIT=1 python3 harp2_lut_generator.py -o harp2_lut_670nm.txt \
-  --ve 0.01 0.02 0.03 0.04 0.05 0.06 0.07 0.08 0.10 0.12 0.15 0.20 0.25 0.30 0.35
-```
-
-(About 5 minutes. Check whether the branch already contains an extended LUT: see section 7.)
+Look-up table range and saturation. The table now covers ve from 0.01 to 0.40
+(20 nodes, denser above 0.1). Checks at the broad end: the neglected fraction of
+geometric cross section outside [r_min, 300 microns] is at most 2e-8 over the whole table
+(the generator refuses to run if it exceeds 1e-6); halving the Mie size-parameter step
+changes -P12 by at most 0.10% of its peak at ve = 0.40; linear interpolation between ve
+nodes is accurate to 0.08% of the peak. Inputs outside the table are still clamped to its
+edges in the forward model, but this is no longer silent: `harp2_Input_Clamped_Fraction`
+and `harp2_Veff_Limit_Fraction` report it. If either is non-negligible in CAM output,
+widen the table (`--ve ...` in `harp2_lut_generator.py`; the gamma distribution requires
+ve < 0.5) rather than trusting the saturated values. Evidence that this matters: in the
+COSP offline UKMO test (input ve = 0.10 everywhere) the old 0.25-limited table returned a
+largest ve of exactly 0.250 (saturated); the extended table returns 0.349. The clamping
+diagnostic also revealed that 3.5% of subcolumns there have model radii outside 4 to 30
+microns. Vertical variation of re near cloud top broadens the retrieved ve, so retrieved ve near or somewhat above the input ve is
+expected, but it is not a validation requirement.
 
 ### 3.3 Solar zenith angle and daylight
 
 * HARP2 uses `cospgridIN%sza` (degrees) for the viewing geometry and skips points with
   SZA > 75 or `sunlit == 0`. Both CAM interfaces set `sunlit` from `coszrs > 0`
-  (and `cosp_runall`).
+  (and `cosp_runall`). The SZA must be CAM's actual solar geometry.
 * `cam_development` already fills `sza`. The release has no such field (see Path A).
 
-### 3.4 LUT file and namelist
+### 3.4 LUT file, namelist, and run validity
 
 * Put `harp2_lut_670nm.txt` in the inputdata tree and pass its path through a new
   `cospsimulator_nl` variable (suggested `cosp_harp2_lut_file`, plus the switch
-  `cosp_lharp2_sim`). New namelist variables must also be added to
+  `cosp_lharp2_sim` and the variance defaults `cosp_harp2_veff_default`,
+  `cosp_harp2_veff_conv`). New namelist variables must also be added to
   `bld/namelist_files/namelist_definition.xml` (group `cospsimulator_nl`) and broadcast in
   `cospsimulator_intr_readnl` like the existing `cosp_l*_sim` switches.
 * Every MPI task reads the file once in `COSP_INIT`. On failure COSP prints
   `ERROR (HARP2 simulator): cannot open look-up table ...`, disables HARP2 and fills its
-  outputs with `R_UNDEF`; other simulators are unaffected.
+  outputs with `R_UNDEF`, and the run would otherwise continue. **After `COSP_INIT`, call
+  `harp2_lut_loaded()` (module `mod_cosp_harp2_interface`) and `endrun` if it is false
+  while `cosp_lharp2_sim` is true.**
 
-### 3.5 History output conventions in CAM
+### 3.5 History output: averaging must use a shared mask
 
-* Follow the MODIS pattern: `addfld(..., horiz_only, 'A', units, ..., flag_xyfill=.true.,
-  fill_value=R_UNDEF)` (release line 986, development line 990).
-* CAM writes cloud-fraction-weighted means for MODIS so that time averages are correct,
-  e.g. `REFFCLWMODIS` is "MODIS Liquid Cloud Particle Size*CLWMODIS" (release line 1014;
-  weighting code at line 2720). Do the same for HARP2: output
-  `REFFCLWHARP2 = re*CLWHARP2` and `VEFFCLWHARP2 = ve*CLWHARP2`, set to `R_UNDEF` where
-  either is `R_UNDEF`.
-* The joint histogram needs two new history coordinates, analogous to `cosp_reffliq`
-  (development line 687): e.g. `cosp_harp2_re` (centers `harp2_histReffCenters`, edges
-  `harp2_histReffEdges`, in m) and `cosp_harp2_ve` (`harp2_histVeffCenters`,
-  `harp2_histVeffEdges`). All are in `mod_cosp_config`.
-* Suggested field names: `CLWHARP2` (%), `REFFCLWHARP2` (m), `VEFFCLWHARP2` (1),
-  `CLHARP2REFFVEFF` (%).
+How CAM averages fields registered with `flag_xyfill=.true.`: `hbuf_accum_add`
+(`control/cam_history_buffers.F90`, starting at line 60) adds a value only when it is not
+the fill value and increments a per-point, per-field counter `nacs`; the time mean divides
+each field by its own counter (`control/cam_history.F90` around lines 4530 to 4546).
+Consequently a weighted numerator must be missing on exactly the same samples as its
+denominator. If the numerator is `R_UNDEF` on samples where the retrieval fraction is 0
+(observed but no retrieval), it is averaged over fewer samples and the ratio of the two
+means is biased high (one fully retrieved 10 micron scene plus one observed clear scene
+gives 1000 / 50 = 20 microns instead of 10).
 
-### 3.6 Cost
+HARP2 recipe (retrieval-fraction-weighted means):
 
-About 14 microseconds per sunlit subcolumn (gfortran -O3, one core), only on COSP
-steps (`cosp_nradsteps`).
+```fortran
+! cf  = cospOUT%harp2_Cloud_Fraction_Liquid_Mean   (%; R_UNDEF where not observed)
+! re  = cospOUT%harp2_Cloud_Particle_Size_Liquid_Mean (m; R_UNDEF where cf == 0)
+where (cf(:ncol) == R_UNDEF)           ! not observed: missing in numerator AND denominator
+   re_w(:ncol) = R_UNDEF
+   ve_w(:ncol) = R_UNDEF
+elsewhere (cf(:ncol) > 0._r8)          ! observed, with retrievals
+   re_w(:ncol) = re(:ncol)*cf(:ncol)
+   ve_w(:ncol) = ve(:ncol)*cf(:ncol)
+elsewhere                              ! observed, no retrieval: zero, not missing
+   re_w(:ncol) = 0._r8
+   ve_w(:ncol) = 0._r8
+end where
+call outfld('REFFCLWHARP2', re_w, pcols, lchnk)   ! time mean re = mean(re_w)/mean(CLWHARP2)
+```
+
+* The joint histogram and the three diagnostics from COSP are already consistent: they are
+  0 (not missing) on observed points without retrievals and `R_UNDEF` only where HARP2 does
+  not observe.
+* Keep the conditional re and ve themselves missing where there are no retrievals if you
+  also output them unweighted.
+* **The same bias affects CAM's existing MODIS fields.** `REFFCLWMODIS` is set to
+  `R_UNDEF` wherever `CLWMODIS` is 0 (release lines 2720 to 2725), so the time mean of
+  `REFFCLWMODIS/CLWMODIS` is biased high. For a HARP2 versus MODIS comparison, apply the
+  same shared-mask treatment to the MODIS fields used, or compare instantaneous output.
+* Registration: follow the MODIS pattern `addfld(..., horiz_only, 'A', units, ...,
+  flag_xyfill=.true., fill_value=R_UNDEF)` (release line 986, development line 990).
+* New history coordinates, analogous to `cosp_reffliq` (development line 687):
+  `cosp_harp2_re` (centers `harp2_histReffCenters`, edges `harp2_histReffEdges`, m),
+  `cosp_harp2_ve` (`harp2_histVeffCenters`, `harp2_histVeffEdges`), and
+  `cosp_harp2_flag` (`numHARP2Flags` values 0 to 4). All sizes are in `mod_cosp_config`.
+* Suggested field names: `CLWHARP2` (%), `REFFCLWHARP2` (m, weighted), `VEFFCLWHARP2`
+  (1, weighted), `CLHARP2REFFVEFF` (%), `HARP2FLAGFRAC` (%), `HARP2VEFFLIM` (%),
+  `HARP2CLAMP` (%).
+
+### 3.6 Interpretation caveats
+
+This is an idealized cloudbow pseudo-retrieval: single scattering, black surface,
+non-polarizing ice, fixed principal-plane view geometry, no measurement noise, no pixel
+aggregation. `CLWHARP2` is the fraction of subcolumns with a successful retrieval, not
+the physical liquid cloud cover; use `HARP2FLAGFRAC` to separate changes in cloud
+occurrence from changes in retrieval selection. Independent validation against vector
+radiative transfer and the real HARP2 geometry and product is still needed before the
+output is interpreted as a reproduction of the HARP2 product.
+
+### 3.7 Cost
+
+About 13 to 14 microseconds per sunlit subcolumn (gfortran -O3, one core; re-measured
+with the 20-node table, unchanged), only on COSP steps (`cosp_nradsteps`).
 
 ## 4. Path B: `cam_development` with COSP v2.2.1
 
@@ -211,22 +309,13 @@ HARP2 files, including the LUT, are under `src/`, so this is fine. The HARP2 cha
 touch `src/cosp.F90`, `src/cosp_config.F90`, `src/cosp_stats.F90` and add the files in
 section 1. To see exactly what changed: `git diff 5eb05e5 FETCH_HEAD -- src`.
 
-### 4.2 Known compile break and its fix
+### 4.2 Swath inputs
 
-`cospsimulator_intr.F90` declares `type(swath_inputs),dimension(6) :: cospswathsIN`
-(line 278) and copies it whole: `cospIN%cospswathsIN = cospswathsIN` (line 2390). With the
-HARP2 branch the COSP component has `dimension(7)`, so this is a shape mismatch at
-compile time, even with HARP2 off. First check the current branch:
-
-```bash
-grep -n "type(swath_inputs)" $C/src/cosp_stats.F90
-```
-
-If it says `dimension(7)`, change CAM's declaration to `dimension(7)` (leave element 7
-with `N_inst_swaths = 0`, or add `COSP_N_SWATHS_HARP2` etc. to the namelist for a HARP2
-overpass mask, index 7). If the branch has been changed back to `dimension(6)` with a
-separate HARP2 swath component (planned, see section 7), no CAM change is needed for
-compatibility.
+No change is needed: `cospIN%cospswathsIN` is still `dimension(6)`, so CAM's
+`type(swath_inputs),dimension(6) :: cospswathsIN` (line 278) and the whole-array copy
+(line 2390) remain valid. To restrict HARP2 to an overpass, set
+`cospIN%harp2_swathIN` (e.g. from new `COSP_N_SWATHS_HARP2`, `COSP_SWATH_LOCALTIMES_HARP2`,
+`COSP_SWATH_WIDTHS_HARP2` namelist variables) after that copy.
 
 ### 4.3 Build: `src/physics/cosp2/Makefile.in`
 
@@ -256,78 +345,90 @@ cosp_harp2_interface.o : $(COSP_PATH)/src/src/simulator/cosp_harp2_interface.F90
 
 ### 4.4 Edits in `src/physics/cam/cospsimulator_intr.F90`
 
-1. Namelist: `cosp_lharp2_sim`, `cosp_harp2_lut_file`, `cosp_harp2_veff_conv`
-   (+ broadcast + `namelist_definition.xml`).
+1. Namelist: `cosp_lharp2_sim`, `cosp_harp2_lut_file`, `cosp_harp2_veff_default`,
+   `cosp_harp2_veff_conv` (+ broadcast + `namelist_definition.xml`). Refuse
+   `cosp_lharp2_sim` without `cosp_lmodis_sim` (3.1).
 2. `COSP_INIT` call (line 1334): append
-   `Lharp2=cosp_lharp2_sim, harp2_lut_file=trim(cosp_harp2_lut_file)`.
+   `Lharp2=cosp_lharp2_sim, harp2_lut_file=trim(cosp_harp2_lut_file)`; then check
+   `harp2_lut_loaded()` (3.4).
 3. `construct_cospIN` (allocations at line 3703): allocate `y%reffLiq`, `y%veffLiq`
    `(npoints,ncolumns,nlevels)` when HARP2 is on (`tau_067` and `fracLiq` are already
    allocated there); deallocate in `destroy_cospIN`.
 4. `subsample_and_optics`: after the MODIS optics, fill `reffLiq` (3.1) and `veffLiq`
-   (3.2). Get `'MU'` with `pbuf_get_index`/`pbuf_get_field` in the run routine and pass
-   the `(1:ncol,ktop:pver)` slice down.
-5. `construct_cosp_outputs`: allocate the four `harp2_*` pointers
-   (sizes from `numHARP2ReffBins`, `numHARP2VeffBins` in `mod_cosp_config`);
+   (3.2). Get `'MU'` (and `'AST'` if used) with `pbuf_get_index`/`pbuf_get_field` in the run
+   routine and pass the `(1:ncol,ktop:pver)` slice down.
+5. `construct_cosp_outputs`: allocate the `harp2_*` pointers you output (sizes
+   `numHARP2ReffBins`, `numHARP2VeffBins`, `numHARP2Flags` from `mod_cosp_config`);
    `destroy_cosp_outputs`: deallocate them.
 6. History: `add_hist_coord` and `addfld` in `cospsimulator_intr_init`, `outfld` in the
-   run routine, with the weighting in 3.5.
+   run routine, with the shared-mask weighting of 3.5.
 7. `sza` is already filled (line 2360); nothing to do.
 
 ## 5. Path A: CESM2.1/2.2 release (COSP v2.1.4cesm), back-port
 
-The HARP2 physics is portable; the plumbing must follow the v2.1.4 layout. Work on a
-local branch inside `$CAM/src/physics/cosp2/src` (a `v2.1.4cesm` checkout). Use the
-HARP2 branch as the template: `git diff 5eb05e5 <HARP2 branch> -- src/cosp.F90`.
+The HARP2 physics is portable; the plumbing must follow the v2.1.4 layout. Work in an
+isolated copy (not in a checkout used by queued experiments), on a local branch of the
+`v2.1.4cesm` checkout in `$CAM/src/physics/cosp2/src`. Use the HARP2 branch as the
+template: `git diff 5eb05e5 <HARP2 branch> -- src`.
 
 1. **Copy unchanged:** `harp2_simulator.F90`, the LUT, `harp2_lut_generator.py`. The
-   core only needs `hist2D` (`mod_cosp_stats`), `R_UNDEF`, `pi`, `wp`; all exist in
-   v2.1.4cesm.
+   core only needs `hist2D` (`mod_cosp_stats`, which in v2.1.4 depends only on
+   `cosp_kinds` and `mod_cosp_config`), `R_UNDEF`, `pi`, `wp`; all exist in v2.1.4cesm.
 2. **`cosp_config.F90`:** copy the "HARP2 simulator ReffLIQ/VeffLIQ joint-histogram"
-   block. It reuses `nReffLiq`, `reffLIQ_binBounds`, `reffLIQ_binCenters`,
-   `reffLIQ_binEdges`, which exist in v2.1.4cesm (6 bins there, so the HARP2 re axis gets
-   6 bins).
+   block, which defines `numHARP2ReffBins`, `numHARP2VeffBins`, `numHARP2Flags` and the
+   bins explicitly (it no longer inherits the MODIS bins, which are 6 in v2.1.4). It uses
+   the implied-do variables `k`, `l`, which v2.1.4 `cosp_config.F90` declares.
 3. **`cosp_harp2_interface.F90`:** remove `use mod_cosp_stats, only: compute_orbitmasks,
    cosp_optical_inputs, cosp_column_inputs` (in v2.1.4 the types live in `mod_cosp`, which
    uses the interface modules, so importing them here would be circular). Keep the
-   parameters, `COSP_HARP2_INIT`, `READ_HARP2_LUT`, `uniform_grid`,
+   parameters, `COSP_HARP2_INIT`, `harp2_lut_loaded`, `READ_HARP2_LUT`, `uniform_grid`,
    `HARP2_VIEW_GEOMETRY` and the `harp2_IN` type. Delete `COSP_ASSIGN_harp2IN` and its
    `_CLEAN` routine; do that assignment inline in `cosp.F90`, as v2.1.4 does for MODIS
    (v2.1.4cesm `cosp.F90` around line 680: pointer assignments plus `pack` of sunlit
-   indices), without any swath logic.
+   indices), **without any swath logic** (no `harp2_swathIN`, no `compute_orbitmasks`).
 4. **`cosp.F90` (v2.1.4):** add `reffLiq`, `veffLiq` to `cosp_optical_inputs`; add
-   `real(wp),allocatable,dimension(:) :: sza` to `cosp_column_inputs`; add the four output
+   `real(wp),allocatable,dimension(:) :: sza` to `cosp_column_inputs`; add the output
    pointers to `cosp_outputs`; add `Lharp2_subcolumn/column` switches, the error checks,
-   the subcolumn loop, the column statistics and the night fill (copy from the HARP2
-   branch `cosp.F90`, adapting names); add optional trailing arguments
+   the subcolumn loop, the column statistics, the night fill and the cleanup (copy from
+   the HARP2 branch `cosp.F90`, adapting names); add optional trailing arguments
    `Lharp2, harp2_lut_file` to `COSP_INIT` (v2.1.4's `COSP_INIT` has no optional
    arguments yet; appending optional ones keeps CAM's positional call valid).
 5. **CAM release `cospsimulator_intr.F90`:** as in 4.4, plus allocate and fill
    `cospstateIN%sza = acos(coszrs(1:ncol))*180._r8/pi` in `construct_cospstateIN` / after
-   the `sunlit` block (around line 2035 to 2077). Levels are `1:pver`. No swath changes.
+   the `sunlit` block (around lines 2035 to 2077). Use all CAM levels, top to bottom
+   (`1:pver` layers, `pver+1` interfaces). No swath changes.
 6. **Build:** same `Makefile.in` additions as 4.3 (the release file uses the same rule
    style).
 
 ## 6. Validation checklist inside CAM
 
+Use a separate case and executable (do not share one with other queued experiments).
+
 1. Build with HARP2 compiled in but switched off; run a short case (e.g. 5 days) and
    compare all existing COSP history fields with an unmodified control build: they must
    be bit-for-bit identical (same compiler and flags).
-2. Switch HARP2 on (with MODIS on): the log has no `HARP2` error lines; fields exist.
-3. Sanity: `CLWHARP2` is 0 to 100 and missing at night; `REFFCLWHARP2/CLWHARP2` is within
-   4 to 30 microns; `VEFFCLWHARP2/CLWHARP2` is around 0.2 or larger with MG2/PUMAS `mu`
-   (with a constant ve it should sit near that constant); the joint histogram summed
-   over bins equals `CLWHARP2`.
-4. Physics check: compare HARP2 re with `REFFCLWMODIS/CLWMODIS`. In the COSP offline test
-   (UKMO data) HARP2 re was on average 1 micron smaller, because the model re peaks in
-   mid-cloud and HARP2 samples only the top few tenths of optical depth. The sign of the
-   difference in CAM should follow the model's re profile near cloud top.
-5. Timing: check the COSP timers against section 3.6.
+2. Switch HARP2 on (with MODIS on): `harp2_lut_loaded()` is true, the log has no `HARP2`
+   error lines, the fields exist.
+3. Closure and masks on instantaneous output (e.g. `nhtfrq=1` for a day):
+   `HARP2FLAGFRAC` sums to 100 on observed points; `CLHARP2REFFVEFF` summed over bins
+   equals `CLWHARP2`; all HARP2 fields are missing at night and for SZA > 75; retrieved
+   re (`REFFCLWHARP2/CLWHARP2` per point) lies within 4 to 30 microns.
+4. History averaging: construct or find a point with a cloudy, a clear and a night sample
+   in one averaging period and check that the averaged `REFFCLWHARP2/CLWHARP2` equals the
+   retrieval-weighted mean of the instantaneous values (3.5).
+5. Saturation: `HARP2VEFFLIM` and `HARP2CLAMP` should be near zero; if not, widen the
+   table (3.2).
+6. Physics sanity (not pass/fail): retrieved ve should sit near the model's ve (about 0.2
+   for prognosed MG2 clouds with Nc > 63 cm^-3, 0.12 for fallback cells, the namelist
+   value for convective liquid), typically broadened a little by vertical re variation.
+   HARP2 re versus MODIS re should follow the model's re profile near cloud top (in the
+   COSP offline UKMO test HARP2 re was on average 1 micron smaller because the model re
+   peaks mid-cloud); remember the MODIS averaging bias in 3.5.
+7. Restart: the simulator has no internal state beyond the LUT, which `COSP_INIT` reads
+   again on restart; check that a restarted run matches a continuous one.
+8. Timing: check the COSP timers against section 3.7.
 
-## 7. Open items on the COSP side (check the branch log before starting)
+## 7. Status of earlier open items
 
-`git log --oneline FETCH_HEAD | head` (or on GitHub) shows whether these were done after
-this document was written:
-
-1. Make the swath change non-breaking (give HARP2 its own swath component and keep
-   `cospswathsIN` at `dimension(6)`), removing the need for 4.2.
-2. Extend the LUT ve range to about 0.35 (section 3.2).
+1. Swath compatibility: done (separate `harp2_swathIN`, section 4.2).
+2. ve range of the table: extended to 0.40 with diagnostics (section 3.2).

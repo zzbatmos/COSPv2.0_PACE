@@ -28,13 +28,14 @@
 !
 ! History
 ! Sep 2026 - Original version
+! Sep 2026 - Separate HARP2 swath input; harp2_lut_loaded; input-clamping threshold
 ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 MODULE MOD_COSP_HARP2_INTERFACE
   USE COSP_KINDS,          ONLY: wp
   USE COSP_MATH_CONSTANTS, ONLY: pi
   USE MOD_COSP_ERROR,      ONLY: errorMessage
   use mod_harp2_sim,       ONLY: min_OpticalThickness,cloudbow_ThetaMin,cloudbow_ThetaMax,  &
-                                 cloudbow_AmplitudeMin,fit_QualityMin,                     &
+                                 cloudbow_AmplitudeMin,fit_QualityMin,inputClamp_WeightMin,&
                                  rayleigh_OpticalDepth,rayleigh_Depolarization,            &
                                  min_NumAnglesInWindow,include_Rayleigh,                   &
                                  nLUT_theta,nLUT_re,nLUT_ve,LUT_wavelength,LUT_theta,      &
@@ -98,6 +99,8 @@ contains
                                        ! optically thick liquid cloud without anything above
     fit_QualityMin        = 0.8_wp     ! Minimum fraction of the non-smooth signal that the
                                        ! cloudbow term must explain
+    inputClamp_WeightMin  = 0.01_wp    ! Diagnostic: flag a subcolumn when liquid layers with
+                                       ! (re, ve) outside the table carry >= 1% of the signal
 
     ! Rayleigh scattering (Hansen and Travis 1974, eq. 2.29, and King factor rho_n = 0.0279)
     include_Rayleigh      = .true.
@@ -122,6 +125,16 @@ contains
          (1._wp + 0.0113_wp/LUT_wavelength**2 + 0.00013_wp/LUT_wavelength**4)
 
   END SUBROUTINE COSP_HARP2_INIT
+
+  ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  ! FUNCTION harp2_lut_loaded
+  ! True when the look-up table was read successfully. Hosts that require HARP2 output
+  ! should check this after COSP_INIT and stop if it is false; otherwise COSP continues
+  ! with the HARP2 outputs set to R_UNDEF.
+  ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+  logical function harp2_lut_loaded()
+    harp2_lut_loaded = nLUT_re > 0
+  end function harp2_lut_loaded
 
   ! %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
   ! SUBROUTINE read_harp2_lut
@@ -257,13 +270,13 @@ contains
 
      HARP2_MASK(1:Npoints) = (cospgridIN%sunlit(1:Npoints) > 0) .and.                     &
                              (harp2IN%sza(1:Npoints) <= harp2_max_sza)
-     if (cospIN % cospswathsIN(7) % N_inst_swaths .gt. 0) then
+     if (cospIN % harp2_swathIN % N_inst_swaths .gt. 0) then
          allocate(HARP2_SWATH_MASK(Npoints))
          ! Do swathing to figure out which cells to simulate on
          call compute_orbitmasks(Npoints,                                                &
-                                 cospIN % cospswathsIN(7) % N_inst_swaths,               &
-                                 cospIN % cospswathsIN(7) % inst_localtimes,             &
-                                 cospIN % cospswathsIN(7) % inst_localtime_widths,       &
+                                 cospIN % harp2_swathIN % N_inst_swaths,                 &
+                                 cospIN % harp2_swathIN % inst_localtimes,               &
+                                 cospIN % harp2_swathIN % inst_localtime_widths,         &
                                  cospgridIN%lat, cospgridIN%lon,                         &
                                  cospgridIN%rttov_date(:,2), cospgridIN%rttov_date(:,3), & ! Time fields: month, dayofmonth
                                  cospgridIN%rttov_time(:,1), cospgridIN%rttov_time(:,2), & ! Time fields: hour, minute
